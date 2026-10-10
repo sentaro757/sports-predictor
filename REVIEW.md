@@ -129,3 +129,33 @@
 - 별도 인메모리 진단으로 무승부 선택 불가능, AI 잘못된 값 수용, 별칭/부정문 오탐, memo 무효화 경쟁, 요청 제한 7개 실행을 재현했다. 진단은 원본 함수를 읽어서 실행했으며 소스 파일을 변경하지 않았다.
 - 로컬 별도 포트의 서버에서 비정상 URL 요청으로 종료(exit 1)를 재현했다. 테스트 서버는 종료됐다.
 - 사용자 Windows 경로에 직접 접근한 것은 아니며 GitHub 저장소 복제본을 검토했다. ANTHROPIC_API_KEY를 사용한 유료 AI 호출은 하지 않았다.
+
+---
+
+## 조치 결과 (Claude, 2026-10-10)
+
+모든 항목을 수정했다. 재현 사례는 `test/review.test.js` 에 회귀 테스트로 넣었다(`npm test`, 12개 통과).
+
+| 항목 | 조치 | 위치 |
+|---|---|---|
+| C1 | URL 파싱을 포함한 요청 처리 전체를 예외 처리, 잘못된 URL은 400 | `server.js` handle() |
+| S1 | 대회 구분을 이벤트의 `league.slug` 로 판별. 지난 시즌 상대 중 현재 리그에 없는 팀(강등팀)의 일정도 추가 수집. 축구는 지난 두 시즌까지 수집. 승격팀은 1500-100에서 시작(`MODEL.newcomer`) | `src/sources/espn.js` getHistory, `src/model.js` |
+| S2 | scoreboard 이벤트의 `season.type` 으로 시범경기 표시, 확률을 50:50 쪽으로 절반 축소하고 화면에 배지·안내 | `espn.js` toGame, `model.js` predictGame |
+| S3 | 축구를 Elo 차이→기대 득점→포아송(Dixon-Coles rho) 모델로 교체. 평균 득점·득점차 계수·rho를 로그 손실 최소로 적합. 백테스트용 적합은 평가 시즌 이전 경기만 사용 | `model.js` soccerProbs/fitSoccer |
+| S4 | 지표명을 "Elo+홈 백테스트"로 변경하고 로그 손실 추가, 보정 미검증 사실을 툴팁·README에 명시. 평가 시즌 라벨은 진행/다가오는 시즌 기준 | `model.js` evaluate, `service.js`, `public/app.js` |
+| S5 | 언급 팀(teamIds)과 신호 대상 팀(impacts) 분리. 키워드 바로 앞 팀에 귀속, "OO전"은 상대팀으로 처리. 영어 별칭 단어 경계, 한국어 별칭 앞 글자 경계. ESPN은 API 팀 태그 우선, 짧은 별칭 제거 | `src/signals.js` attribute |
+| S6 | 부정문 처리(영어 앞쪽/한국어 뒤쪽), "부상에서 복귀"는 복귀로. 같은 사건 기사 1회, 부상 명단이 있는 리그는 기사 부상 미반영, 같은 선수 1회. 장기 결장 판단은 `details.returnDate` 기준 | `signals.js`, `model.js` injuryAdj |
+| S7 | memo 항목에 세대 번호, 현재 세대 작업만 저장/삭제 | `src/http.js` memo |
+| S8 | 종료 시 대기자에게 슬롯을 직접 넘기는 세마포어 | `http.js` withSlot |
+| S9 | 숫자·범위·필수 키·합계·종목별 무승부·factors 구조 검증, 실패 시 1회 재시도 후 통계 결과로 대체(캐시 안 함) | `src/ai.js` parseAndValidate |
+| S10 | 기본 127.0.0.1 바인딩, 외부 바인딩은 ACCESS_TOKEN 필수. Host 헤더 검사(DNS 리바인딩), 다른 Origin의 POST 차단, AI 하루 30회·동시 2건 제한 | `server.js`, `src/config.js`, `ai.js` |
+| I1 | 시즌 경계를 ESPN 시즌 정보 / 국내는 KST 시즌 연도(KBL 8월 시작)로 판단, 공백 규칙은 보조. 새 시즌 첫 경기 전에도 평균회귀·폼 초기화 적용 | `model.js` seasonView, `config.js` seasonOfKst |
+| I2 | 네이버는 KST 날짜로 요청, ESPN은 앞뒤 하루씩 넓게 요청한 뒤 실제 시각으로 재필터 | `naver.js`, `espn.js`, `service.js` |
+| I3 | 부분 수집 실패·오래된 캐시·비정상 점수를 경고로 수집해 API·화면·check에 표시. 팀 목록/시즌 정보 누락은 명확한 오류. check는 실패 시 exit 1. 점수는 수집 단계에서 숫자 강제, 화면에서도 숫자만 출력 | sources, `service.js`, `scripts/check.js` |
+| I4 | system 프롬프트에 외부 데이터 불신 명시, 기사를 id가 붙은 JSON으로 `<external_data>` 안에 전달, 길이 제한, 근거 id 검증, 통계 대비 ±15%p 제한 | `ai.js` |
+| I5 | 임시 파일 저장 후 rename, 저장 실패 로그, 14일 지난 디스크 캐시·2일 지난 메모리 캐시 정리 | `http.js` |
+| 기타 | 정적 파일 경로를 decode 후 `path.relative` 로 경계 검사 | `server.js` serveStatic |
+
+수정 후 `npm run check` (exit 0): 축구 Elo+홈 백테스트는 평가 시즌 이전 데이터로 보정한 상태에서 EPL 47%(360경기), 분데스 53%, 세리에A 51%, 리그1 52%. K리그1은 37%(175경기)로 낮다.
+
+남은 한계: 폼·부상·뉴스 보정은 과거 시점 스냅샷이 없어 여전히 검증되지 않는다. 기사 대상 팀 판단은 위치 기반 규칙이라 복잡한 문장에서는 틀릴 수 있다.

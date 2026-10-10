@@ -99,6 +99,8 @@ a:hover { text-decoration: underline; }
 .team .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .team.pick .nm { font-weight: 700; }
 .alert { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.team .tag.pre { color: var(--warn); border-color: var(--warn); }
+.warn-text { color: var(--warn); }
 
 .bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
 .bar span { display: block; height: 100%; }

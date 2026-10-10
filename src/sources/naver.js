@@ -1,6 +1,7 @@
 // 네이버 스포츠: KBO / K리그1 / KBL 일정·결과·뉴스
 import { fetchCached } from '../http.js';
 import { classify } from '../signals.js';
+import { seasonOfKst } from '../config.js';
 
 const API = 'https://api-gw.sports.naver.com';
 
@@ -13,7 +14,9 @@ const EXTRA_ALIASES = {
   수원FC: ['수원FC'], 김천: ['김천상무', '김천 상무'], 안양: ['FC안양', 'FC 안양'], 대구: ['대구FC'],
 };
 
-const ymd = (d) => d.toISOString().slice(0, 10);
+// 네이버는 한국 날짜(KST)로 조회한다
+const ymd = (d) => new Date(d.getTime() + 9 * 3600e3).toISOString().slice(0, 10);
+const scoreOf = (x) => (x == null || x === '' ? null : Number.isFinite(Number(x)) && Number(x) >= 0 ? Number(x) : null);
 
 function statusOf(g) {
   if (g.cancel || g.statusCode === 'CANCEL') return 'cancelled';
@@ -30,50 +33,66 @@ function aliasesFor(name) {
 }
 
 function toGame(league, g) {
+  if (!g.gameId || !g.homeTeamCode || !g.awayTeamCode) return null;
+  // gameDateTime 은 시간대 표기가 없는 KST 시각. 이미 표기가 있으면 그대로 쓴다
+  const date = /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(g.gameDateTime || '') ? g.gameDateTime : `${g.gameDateTime}+09:00`;
+  if (Number.isNaN(Date.parse(date))) return null;
   const team = (side) => ({
-    id: g[`${side}TeamCode`],
-    name: g[`${side}TeamName`],
+    id: String(g[`${side}TeamCode`]),
+    name: String(g[`${side}TeamName`] || g[`${side}TeamCode`]),
     logo: g[`${side}TeamEmblemUrl`],
   });
+  let status = statusOf(g);
+  const homeScore = scoreOf(g.homeTeamScore);
+  const awayScore = scoreOf(g.awayTeamScore);
+  if (status === 'final' && (homeScore == null || awayScore == null)) status = 'unknown';
   return {
-    id: g.gameId,
+    id: String(g.gameId),
     league: league.id,
-    date: `${g.gameDateTime}+09:00`,
-    status: statusOf(g),
+    date,
+    season: seasonOfKst(league, date),
+    preseason: false,
+    status,
     statusText: g.statusInfo,
     home: team('home'),
     away: team('away'),
-    homeScore: g.homeTeamScore ?? null,
-    awayScore: g.awayTeamScore ?? null,
+    homeScore,
+    awayScore,
     neutral: !!g.neutralGround,
   };
 }
 
-async function fetchRange(league, from, to, ttl) {
+async function fetchRange(league, from, to, ttl, warn) {
   const url =
     `${API}/schedule/games?fields=basic&upperCategoryId=${league.upper}&categoryId=${league.category}` +
     `&fromDate=${ymd(from)}&toDate=${ymd(to)}&size=1000`;
-  const j = await fetchCached(url, { ttl });
-  return (j.result?.games || []).map((g) => toGame(league, g));
+  const j = await fetchCached(url, { ttl, warn });
+  if (!Array.isArray(j.result?.games)) throw new Error(`네이버 일정 응답 형식이 다릅니다 (${league.name})`);
+  const games = j.result.games.map((g) => toGame(league, g)).filter(Boolean);
+  if (j.result.gameTotalCount > j.result.games.length) warn?.(`일정 일부만 받음 (${j.result.games.length}/${j.result.gameTotalCount})`);
+  return games;
 }
 
-export async function getGames(league, from, to) {
-  return fetchRange(league, from, to, 300);
+export async function getGames(league, from, to, warn) {
+  return fetchRange(league, from, to, 300, warn);
 }
 
 /** 최근 약 18개월 결과 (지난 시즌 포함 → Elo 초기값 안정화) */
-export async function getHistory(league) {
+export async function getHistory(league, warn) {
   const now = new Date();
   const chunks = [];
   // 6개월 단위로 나눠 요청. 오래된 구간은 하루, 최근 구간은 10분 캐시
   for (let i = 2; i >= 0; i--) {
     const to = new Date(now.getTime() - i * 182 * 86400e3);
     const from = new Date(to.getTime() - 181 * 86400e3);
-    chunks.push(fetchRange(league, from, to, i === 0 ? 600 : 86400));
+    chunks.push(fetchRange(league, from, to, i === 0 ? 600 : 86400, warn));
   }
   const all = (await Promise.all(chunks)).flat();
   const seen = new Set();
-  return all.filter((g) => !seen.has(g.id) && seen.add(g.id));
+  const games = all.filter((g) => !seen.has(g.id) && seen.add(g.id));
+  const invalid = games.filter((g) => g.status === 'unknown').length;
+  if (invalid) warn?.(`점수가 비정상인 완료 경기 ${invalid}건 제외`);
+  return games;
 }
 
 export function teamsFromGames(games) {
@@ -86,28 +105,31 @@ export function teamsFromGames(games) {
   return [...map.values()];
 }
 
-export async function getNews(league) {
+export async function getNews(league, warn) {
   const pages = await Promise.all(
     [1, 2].map((p) =>
-      fetchCached(`${API}/news/articles/${league.newsSection}?sort=latest&page=${p}&pageSize=100`, { ttl: 600 }).catch(
-        () => null,
+      fetchCached(`${API}/news/articles/${league.newsSection}?sort=latest&page=${p}&pageSize=100`, { ttl: 600, warn }).catch(
+        (e) => {
+          warn?.(`뉴스 ${p}페이지 수집 실패: ${e.message}`);
+          return null;
+        },
       ),
     ),
   );
   const list = pages.flatMap((j) => j?.result?.newsList || []);
-  return list.map((n) => ({
-    title: n.title,
+  return list.filter((n) => n.title && n.oid && n.aid).map((n) => ({
+    title: String(n.title).slice(0, 200),
     summary: (n.subContent || '').replace(/\s+/g, ' ').slice(0, 220),
     url: `https://m.sports.naver.com/${n.sportsSection || league.newsSection}/article/${n.oid}/${n.aid}`,
     source: n.sourceName,
     date: n.dateTime ? `${n.dateTime}+09:00` : null,
     image: n.thumbnail || null,
     lang: 'ko',
-    tags: classify(`${n.title} ${n.subContent}`),
+    tags: classify(`${n.title} ${n.subContent || ''}`),
   }));
 }
 
-// 국내 리그는 공개된 구조화 부상/이적 데이터가 없어 뉴스에서 추출한다 (index.js에서 처리)
+// 국내 리그는 공개된 구조화 부상/이적 데이터가 없어 뉴스에서 추출한다 (service.js에서 처리)
 export async function getInjuries() {
   return null;
 }

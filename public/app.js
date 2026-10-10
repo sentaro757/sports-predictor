@@ -3,6 +3,7 @@ const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? esc(u) : '#');
 const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+const num = (x) => (Number.isFinite(Number(x)) ? String(Number(x)) : '-');
 const signed = (x) => `${x > 0 ? '+' : ''}${Math.round(x)}`;
 
 const TZ = 'Asia/Seoul';
@@ -21,8 +22,23 @@ const TAG_NAMES = { injury: '부상', return: '복귀', transfer: '영입', rele
 
 const state = { catalog: null, sport: null, league: null, tab: 'games', data: null, ai: { enabled: false } };
 
-async function api(path, opts) {
-  const res = await fetch(path, opts);
+// 서버를 ACCESS_TOKEN 과 함께 띄운 경우: 주소의 ?token= 값을 이 탭에 기억해 두고 요청마다 보낸다
+function accessToken() {
+  try {
+    const t = new URLSearchParams(location.search).get('token');
+    if (t) {
+      sessionStorage.setItem('token', t);
+      history.replaceState(null, '', location.pathname);
+    }
+    return sessionStorage.getItem('token') || '';
+  } catch {
+    return '';
+  }
+}
+const TOKEN = accessToken();
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), ...(TOKEN ? { 'x-access-token': TOKEN } : {}) } });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || res.statusText);
   return body;
@@ -83,10 +99,14 @@ async function loadLeague(refresh = false) {
     if (state.league !== id) return;
     state.data = data;
     $('#league-title').textContent = data.league.name;
-    const bt = data.backtest
-      ? ` · 모델 적중률 ${pct(data.backtest.accuracy)} (${esc(data.backtest.label)} ${data.backtest.games}경기 사후검증)`
+    const b = data.backtest;
+    const bt = b
+      ? ` · <span title="경기 직전의 Elo 레이팅과 홈 어드밴티지만으로 예측했을 때의 성적입니다. 폼·부상·뉴스 보정은 과거 시점 기록이 없어 검증에 포함되지 않습니다. 로그 손실은 낮을수록 좋습니다.">Elo+홈 백테스트 적중률 ${pct(b.accuracy)} (${esc(b.label)} ${b.games}경기, 로그손실 ${b.logLoss.toFixed(3)}) ⓘ</span>`
       : '';
-    $('#league-meta').innerHTML = `분석 경기 ${data.gamesUsed.toLocaleString()}개${bt} · ${fmtTime(data.updatedAt)} 업데이트`;
+    const warn = data.warnings?.length
+      ? `<br><span class="warn-text">⚠ ${data.warnings.map(esc).join(' · ')}</span>`
+      : '';
+    $('#league-meta').innerHTML = `분석 경기 ${data.gamesUsed.toLocaleString()}개${bt} · ${fmtTime(data.updatedAt)} 업데이트${warn}`;
     renderContent();
   } catch (e) {
     $('#league-title').textContent = '오류';
@@ -121,7 +141,7 @@ function renderGames(d) {
     html += `<div class="card game" data-game="${esc(g.id)}">
       <div class="time">${g.status === 'live' ? '<span class="live">● LIVE</span>' : ''}${fmtTime(g.date)}</div>
       <div class="teams">
-        <div class="team ${pick === 'away' ? 'pick' : ''}">${g.away.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.away.logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g.away.name)}</span><span class="tag">원정</span>${alert(g.alerts.away)}</div>
+        <div class="team ${pick === 'away' ? 'pick' : ''}">${g.away.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.away.logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g.away.name)}</span><span class="tag">원정</span>${g.preseason ? '<span class="tag pre">시범경기</span>' : ''}${alert(g.alerts.away)}</div>
         <div class="team ${pick === 'home' ? 'pick' : ''}">${g.home.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.home.logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g.home.name)}</span><span class="tag">홈</span>${alert(g.alerts.home)}</div>
       </div>
       <div class="probs">${probBar(g.prediction.probs, soccer)}</div>
@@ -135,7 +155,7 @@ function renderResults(d) {
   return `<div class="card"><table><thead><tr><th>날짜</th><th>원정</th><th class="num">스코어</th><th>홈</th></tr></thead><tbody>${d.results
     .map(
       (g) => `<tr><td class="muted">${fmtDate(g.date)}</td><td>${esc(g.away.name)}</td>
-      <td class="num"><b>${g.awayScore} : ${g.homeScore}</b></td><td>${esc(g.home.name)}</td></tr>`,
+      <td class="num"><b>${num(g.awayScore)} : ${num(g.homeScore)}</b></td><td>${esc(g.home.name)}</td></tr>`,
     )
     .join('')}</tbody></table></div>`;
 }
@@ -176,7 +196,7 @@ function renderInjuries(d) {
   return `<div class="card"><table><thead><tr><th>팀</th><th>선수</th><th>상태</th><th>내용</th><th>날짜</th></tr></thead><tbody>${d.injuries
     .map(
       (i) => `<tr><td>${esc(i.teamName)}</td><td><b>${esc(i.player)}</b> <span class="muted small">${esc(i.position || '')}</span></td>
-      <td><span class="chip injury">${esc(i.status)}</span></td><td class="small">${esc(i.detail)}</td><td class="muted small">${fmtDate(i.date)}</td></tr>`,
+      <td><span class="chip injury">${esc(i.status)}</span>${i.returnDate ? `<div class="muted small">복귀 예정 ${fmtDate(i.returnDate)}</div>` : ''}</td><td class="small">${esc(i.detail)}</td><td class="muted small">${fmtDate(i.date)}</td></tr>`,
     )
     .join('')}</tbody></table></div>`;
 }
@@ -250,6 +270,8 @@ async function openGame(gameId) {
       </div>
       ${probBar(p.probs, soccer)}
       <p class="note" style="margin-top:8px">순수 전력(Elo+홈)만 보면 홈 ${pct(p.baseProbs.home)}${soccer ? ` / 무 ${pct(p.baseProbs.draw)}` : ''} / 원정 ${pct(p.baseProbs.away)} → 폼·부상·뉴스 보정 후 위 확률</p>
+      ${p.preseason ? '<p class="note warn-text">시범경기입니다. 주전 출전시간이 달라 확률을 50:50 쪽으로 절반 당겼습니다.</p>' : ''}
+      ${p.newSeason ? '<p class="note">새 시즌 첫 경기 전이라 지난 시즌 레이팅을 평균 쪽으로 일부 되돌려 계산했습니다.</p>' : ''}
 
       <div class="section" id="ai-section">${aiSection(gameId)}</div>
 
@@ -257,7 +279,7 @@ async function openGame(gameId) {
 
       <div class="section"><h3>최근 맞대결</h3>${miniList(
         d.h2h,
-        (x) => `${fmtDate(x.date)} · ${esc(x.away.name)} <b>${x.awayScore} : ${x.homeScore}</b> ${esc(x.home.name)}`,
+        (x) => `${fmtDate(x.date)} · ${esc(x.away.name)} <b>${num(x.awayScore)} : ${num(x.homeScore)}</b> ${esc(x.home.name)}`,
         '최근 맞대결 기록 없음',
       )}</div>
 
@@ -286,10 +308,16 @@ async function runAi(gameId, g) {
     const r = await api(`/api/ai/${state.league}/${gameId}`, { method: 'POST' });
     const soccer = state.data.league.sport === 'soccer';
     const name = (s) => esc(s === 'home' ? g.home.name : g.away.name);
-    $('#ai-section').innerHTML = `<div class="card ai-box"><b>AI 분석 결과</b> <span class="muted small">${esc(r.model)}</span>
+    const factors = (r.factors || []).filter((f) => f && (f.team === 'home' || f.team === 'away'));
+    const srcLinks = (f) =>
+      (f.sources || []).length
+        ? ` <span class="muted small">— 근거: ${f.sources.map((x) => (x.url ? `<a href="${safeUrl(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title))).join(', ')}</span>`
+        : '';
+    $('#ai-section').innerHTML = `<div class="card ai-box"><b>${r.fallback ? 'AI 분석 실패 — 통계모델 결과' : 'AI 분석 결과'}</b> <span class="muted small">${esc(r.model)}</span>
       <div style="margin:10px 0">${probBar(r.probs, soccer)}</div>
       <p>${esc(r.summary)}</p>
-      ${r.factors.map((f) => `<div class="factor"><span class="${f.impact === '+' ? 'pos' : 'neg'}">${f.impact === '+' ? '▲' : '▼'}</span> <b>${name(f.team)}</b> ${esc(f.text)}</div>`).join('')}
+      ${r.clamped ? '<p class="note">AI가 제시한 확률이 통계 예측과 너무 달라 허용 범위(±15%p) 안으로 조정했습니다.</p>' : ''}
+      ${factors.map((f) => `<div class="factor"><span class="${f.impact === '+' ? 'pos' : 'neg'}">${f.impact === '+' ? '▲' : '▼'}</span> <b>${name(f.team)}</b> ${esc(f.text)}${srcLinks(f)}</div>`).join('')}
     </div>`;
   } catch (e) {
     btn.disabled = false;

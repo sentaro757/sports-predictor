@@ -1,13 +1,14 @@
 import { LEAGUES, SPORTS, UPCOMING_DAYS, leagueById } from './config.js';
 import { memo } from './http.js';
 import { buildRatings, predictGame } from './model.js';
-import { mentions, teamNewsSignal } from './signals.js';
+import { attribute, teamNewsSignal } from './signals.js';
 import * as naver from './sources/naver.js';
 import * as espn from './sources/espn.js';
 import { getTeamFeedNews } from './sources/feeds.js';
 
 const src = (league) => (league.source === 'naver' ? naver : espn);
 const byDateDesc = (a, b) => Date.parse(b.date || 0) - Date.parse(a.date || 0);
+const LIVE_GRACE_MS = 6 * 3600e3; // 시작 후 6시간까지는 진행 중 경기로 목록에 남긴다
 
 function requireLeague(id) {
   const l = leagueById(id);
@@ -16,53 +17,68 @@ function requireLeague(id) {
 }
 
 /** 해외 리그용 국내 언론 기사(해외야구/해외축구/농구 섹션) — 팀 매칭 없이 리그 뉴스로만 노출 */
-async function koreanNewsFor(league) {
+async function koreanNewsFor(league, warn) {
   if (league.source === 'naver') return [];
-  return naver.getNews({ newsSection: league.newsSection }).catch(() => []);
+  return naver.getNews({ newsSection: league.newsSection }, warn).catch(() => []);
 }
 
 /** 리그 단위로 모든 데이터를 모으고 Elo를 계산한다 (10분 캐시) */
 export function leagueData(leagueId) {
   const league = requireLeague(leagueId);
   return memo(`league:${leagueId}`, 600, async () => {
+    const warnings = new Set();
+    const warn = (m) => warnings.add(m);
     const s = src(league);
-    const now = new Date();
-    const from = new Date(now.getTime() - 86400e3);
-    const to = new Date(now.getTime() + UPCOMING_DAYS * 86400e3);
+    const now = Date.now();
+    const from = new Date(now - 86400e3);
+    const to = new Date(now + (UPCOMING_DAYS + 1) * 86400e3);
 
-    const [history, upcoming, news, injuries, transactions, feedNews, koNews] = await Promise.all([
-      s.getHistory(league),
-      s.getGames(league, from, to),
-      s.getNews(league).catch(() => []),
-      s.getInjuries(league).catch(() => null),
-      s.getTransactions(league).catch(() => null),
+    // 일정·결과는 핵심 데이터라 실패하면 예외를 그대로 올린다. 나머지는 경고만 남긴다
+    const [history, rawUpcoming, news, injuries, transactions, feedNews, koNews] = await Promise.all([
+      s.getHistory(league, warn),
+      s.getGames(league, from, to, warn),
+      s.getNews(league, warn).catch((e) => (warn(`뉴스 수집 실패: ${e.message}`), [])),
+      s.getInjuries(league, warn).catch(() => null),
+      s.getTransactions(league, warn).catch(() => null),
       getTeamFeedNews(league.id),
-      koreanNewsFor(league),
+      koreanNewsFor(league, warn),
     ]);
+    if (!history.length) warn('과거 경기 결과가 없습니다 — 예측이 모두 50:50에 가깝게 나옵니다');
 
-    const teams = league.source === 'naver' ? naver.teamsFromGames([...history, ...upcoming]) : await espn.getTeams(league);
+    // 요청은 날짜 단위로 넉넉하게 했으므로 실제 시각으로 다시 거른다
+    const upcoming = rawUpcoming.filter((g) => {
+      const t = Date.parse(g.date);
+      return t >= now - LIVE_GRACE_MS && t <= now + UPCOMING_DAYS * 86400e3;
+    });
+
+    const teams = league.source === 'naver' ? naver.teamsFromGames([...history, ...upcoming]) : await espn.getTeams(league, warn);
     const teamMap = new Map(teams.map((t) => [t.id, t]));
 
-    // 기사 ↔ 팀 매칭 (ESPN 기사는 태그된 팀 + 이름 매칭)
+    // 기사 ↔ 팀: 언급된 팀(teamIds)과 전력 신호의 대상 팀(impacts)을 따로 구한다
     const articles = [...feedNews, ...news].map((a) => {
-      const ids = new Set(a.teamIds || []);
-      for (const t of teams) if (mentions(`${a.title} ${a.summary}`, t.aliases)) ids.add(t.id);
-      return { ...a, teamIds: [...ids].filter((id) => teamMap.has(id)) };
+      const { teamIds, impacts } = attribute(a, teams, (a.teamIds || []).filter((id) => teamMap.has(id)));
+      return { ...a, teamIds: teamIds.filter((id) => teamMap.has(id)), impacts };
     });
     articles.sort(byDateDesc);
 
     const model = buildRatings(history, league.sport);
+    // 현재 시즌에 뛰는 팀 (강등팀은 순위표에서 제외)
+    const activeIds = new Set(
+      [...history.filter((g) => g.season === model.lastSeason), ...upcoming].flatMap((g) => [g.home.id, g.away.id]),
+    );
     return {
       league,
       teams,
       teamMap,
+      activeIds,
       history,
       upcoming,
       articles,
       koNews: koNews.sort(byDateDesc),
-      injuries, // null 이면 구조화 데이터 없음(국내 리그)
+      injuries, // null 이면 구조화 데이터 없음(국내 리그, 유럽 축구)
       transactions,
       model,
+      warnings: [...warnings],
       updatedAt: new Date().toISOString(),
     };
   });
@@ -74,8 +90,12 @@ function teamContext(data, teamId) {
   const transactions = data.transactions
     ? data.transactions.filter((t) => t.teamId === teamId)
     : articles.filter((a) => a.tags.includes('transfer') || a.tags.includes('release'));
-  const injuryNews = articles.filter((a) => a.tags.includes('injury') || a.tags.includes('return'));
-  return { articles, injuries, injuryNews, transactions, signal: teamNewsSignal(articles) };
+  // 이 팀이 부상/복귀 신호의 대상인 기사만
+  const injuryNews = data.articles.filter((a) =>
+    a.impacts.some((x) => x.teamId === teamId && (x.tag === 'injury' || x.tag === 'return')),
+  );
+  const signal = teamNewsSignal(data.articles, teamId, { ignoreInjury: !!data.injuries });
+  return { articles, injuries, injuryNews, transactions, signal };
 }
 
 function predict(data, game) {
@@ -85,12 +105,12 @@ function predict(data, game) {
     model: data.model,
     injuries: { home: h.injuries, away: a.injuries },
     signals: { home: h.signal, away: a.signal },
-    structuredInjuries: !!data.injuries,
   });
   return { prediction, ctx: { home: h, away: a } };
 }
 
 const slimTeam = (data, t) => ({ ...t, logo: t.logo || data.teamMap.get(t.id)?.logo });
+const alertCount = (data, c) => (data.injuries ? c.injuries.length : c.injuryNews.length);
 
 export async function leagueOverview(leagueId) {
   const data = await leagueData(leagueId);
@@ -104,10 +124,7 @@ export async function leagueOverview(leagueId) {
         home: slimTeam(data, g.home),
         away: slimTeam(data, g.away),
         prediction: { probs: prediction.probs, pick: prediction.pick, confidence: prediction.confidence },
-        alerts: {
-          home: ctx.home.injuries.length + ctx.home.injuryNews.length,
-          away: ctx.away.injuries.length + ctx.away.injuryNews.length,
-        },
+        alerts: { home: alertCount(data, ctx.home), away: alertCount(data, ctx.away) },
       };
     });
 
@@ -117,23 +134,33 @@ export async function leagueOverview(leagueId) {
     .slice(0, 15);
 
   const rankings = [...data.model.ratings.entries()]
-    .filter(([id]) => data.teamMap.has(id))
-    .map(([id, elo]) => ({ ...data.teamMap.get(id), aliases: undefined, elo: Math.round(elo), form: (data.model.recent.get(id) || []).slice(-5) }))
+    .filter(([id]) => data.teamMap.has(id) && data.activeIds.has(id))
+    .map(([id, elo]) => {
+      const t = data.teamMap.get(id);
+      return { id, name: t.name, logo: t.logo, elo: Math.round(elo), form: (data.model.recent.get(id) || []).slice(-5) };
+    })
     .sort((a, b) => b.elo - a.elo);
 
+  // 백테스트 라벨은 "지금 진행 중인(또는 다가오는) 시즌" 기준으로 붙인다
+  const currentSeason = Math.max(data.model.lastSeason ?? -Infinity, ...data.upcoming.map((g) => g.season ?? -Infinity));
+  const backtest = data.model.backtest && {
+    ...data.model.backtest,
+    label: data.model.backtest.season === currentSeason ? '이번 시즌' : '지난 시즌',
+  };
+  const injuryArticles = data.articles.filter((a) => a.impacts.some((x) => x.tag === 'injury' || x.tag === 'return'));
   return {
     league: data.league,
     updatedAt: data.updatedAt,
-    backtest: data.model.backtest,
+    warnings: data.warnings,
+    backtest,
+    soccerParams: data.model.soccer,
     gamesUsed: data.model.gamesUsed,
     games,
     results,
     rankings,
     news: data.articles.slice(0, 60),
     koNews: data.koNews.slice(0, 40),
-    injuries: data.injuries
-      ? data.injuries.slice().sort(byDateDesc).slice(0, 150)
-      : data.articles.filter((a) => a.tags.includes('injury') || a.tags.includes('return')).slice(0, 60),
+    injuries: data.injuries ? data.injuries.slice().sort(byDateDesc).slice(0, 150) : injuryArticles.slice(0, 60),
     injuriesStructured: !!data.injuries,
     transactions: data.transactions
       ? data.transactions.slice().sort(byDateDesc).slice(0, 100)
