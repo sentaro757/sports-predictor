@@ -1,6 +1,7 @@
 // (선택) Claude로 뉴스·부상·이적 기사를 읽고 통계 예측을 보정한다. ANTHROPIC_API_KEY 가 있어야 동작
-import { AI_MODEL, AI_DAILY_LIMIT, AI_MAX_CONCURRENT, AI_MAX_SHIFT } from './config.js';
+import { AI_MODEL, AI_DAILY_LIMIT, AI_MAX_CONCURRENT, AI_MAX_SHIFT, fallbackParams } from './config.js';
 import { gameDetail } from './service.js';
+import { recordUsage } from './usage.js';
 
 const CACHE_TTL = 3 * 3600e3; // 같은 경기는 3시간 동안 다시 분석하지 않는다 (비용 절감)
 const MAX_ATTEMPTS = 2; // 형식이 잘못된 응답이면 한 번 더 시도
@@ -152,21 +153,34 @@ async function runAnalysis(leagueId, gameId) {
   const req = buildRequest(detail);
   const anthropic = await getClient();
   let lastError = '';
+  // 재시도까지 포함한 이번 분석의 실제 비용
+  const cost = { usd: 0, krw: 0, inputTokens: 0, outputTokens: 0, calls: 0, unpriced: false };
+  const track = (response) => {
+    const c = recordUsage('analysis', response);
+    cost.calls++;
+    cost.inputTokens += c.inputTokens;
+    cost.outputTokens += c.outputTokens;
+    if (c.costUsd == null) cost.unpriced = true;
+    else {
+      cost.usd += c.costUsd;
+      cost.krw += c.costKrw;
+    }
+  };
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     takeCall();
     const response = await anthropic.beta.messages.create({
       model: AI_MODEL,
       max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
+      ...fallbackParams(AI_MODEL),
       output_config: { effort: 'medium' },
       system: SYSTEM,
       messages: [{ role: 'user', content: req.content }],
     });
+    track(response);
     if (response.stop_reason === 'refusal') throw Object.assign(new Error('AI가 이 요청에 대한 분석을 거절했습니다'), { status: 502 });
     const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
     try {
-      return { ...parseAndValidate(text, req), model: response.model, at: new Date().toISOString(), fallback: false };
+      return { ...parseAndValidate(text, req), model: response.model, at: new Date().toISOString(), fallback: false, cost };
     } catch (e) {
       if (!(e instanceof InvalidOutput)) throw e;
       lastError = e.message;
@@ -182,6 +196,7 @@ async function runAnalysis(leagueId, gameId) {
     model: AI_MODEL,
     at: new Date().toISOString(),
     fallback: true,
+    cost,
   };
 }
 
@@ -191,7 +206,7 @@ export async function analyzeGame(leagueId, gameId) {
   }
   const key = `${leagueId}:${gameId}`;
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL) return hit.value;
+  if (hit && Date.now() - hit.at < CACHE_TTL) return { ...hit.value, cached: true };
   if (inflight.has(key)) return inflight.get(key);
   if (running >= AI_MAX_CONCURRENT) {
     throw Object.assign(new Error('다른 AI 분석이 진행 중입니다. 잠시 후 다시 시도하세요'), { status: 429 });

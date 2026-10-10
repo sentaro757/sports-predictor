@@ -44,11 +44,22 @@ export const AI_MAX_CONCURRENT = 2;
 // AI가 통계 확률에서 바꿀 수 있는 최대 폭 (결과별, 0.15 = 15%p)
 export const AI_MAX_SHIFT = 0.15;
 // AI 기사 분류 (AI_TAG_ARTICLES=1 일 때만): 사용할 모델, 하루 최대 호출 수 (1회 = 기사 최대 30건)
-export const AI_TAG_MODEL = process.env.AI_TAG_MODEL || process.env.AI_MODEL || 'claude-opus-5-5';
+// 분류는 단순 작업이라 기본값은 비용이 약 1/40 인 Haiku (경기 분석 버튼은 AI_MODEL = Opus 유지)
+export const AI_TAG_MODEL = process.env.AI_TAG_MODEL || 'claude-haiku-5-5';
 export const AI_TAG_DAILY_LIMIT = Number(process.env.AI_TAG_DAILY_LIMIT || 40);
 export const AI_MODEL = process.env.AI_MODEL || 'claude-opus-5-5';
 
 export const leagueById = (id) => LEAGUES.find((l) => l.id === id);
+
+/**
+ * AI가 요청을 거절했을 때 서버가 다른 모델로 대신 답하게 하는 옵션.
+ * Opus 5/5.5, Fable 5.1, Sonnet 5.5 만 지원 (Haiku 에 보내면 오류)
+ */
+export function fallbackParams(model) {
+  return /^claude-(opus-5|fable-5-1|sonnet-5-5)/.test(model)
+    ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }
+    : {};
+}
 
 /** KST 날짜 기준 시즌 연도 (네이버 리그용) */
 export function seasonOfKst(league, iso) {

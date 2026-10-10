@@ -2,9 +2,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { PORT, HOST, ACCESS_TOKEN, AI_MODEL } from './src/config.js';
+import { PORT, HOST, ACCESS_TOKEN, AI_MODEL, AI_TAG_MODEL } from './src/config.js';
 import { catalog, leagueOverview, gameDetail } from './src/service.js';
 import { analyzeGame, aiEnabled, aiUsage } from './src/ai.js';
+import { taggerEnabled } from './src/ai-tagger.js';
+import { usageSummary } from './src/usage.js';
 import { clearMemo } from './src/http.js';
 
 const PUBLIC = path.join(import.meta.dirname, 'public');
@@ -17,7 +19,15 @@ const json = (res, status, body) => {
 };
 
 const routes = [
-  ['GET', /^\/api\/catalog$/, () => ({ sports: catalog(), ai: { enabled: aiEnabled(), model: AI_MODEL, usage: aiUsage() } })],
+  [
+    'GET',
+    /^\/api\/catalog$/,
+    () => ({
+      sports: catalog(),
+      ai: { enabled: aiEnabled(), model: AI_MODEL, usage: aiUsage(), tagging: { enabled: taggerEnabled(), model: AI_TAG_MODEL } },
+    }),
+  ],
+  ['GET', /^\/api\/usage$/, () => usageSummary()],
   ['GET', /^\/api\/league\/([\w-]+)$/, ([id]) => leagueOverview(id)],
   ['GET', /^\/api\/game\/([\w-]+)\/([\w-]+)$/, ([l, g]) => gameDetail(l, g)],
   ['POST', /^\/api\/ai\/([\w-]+)\/([\w-]+)$/, ([l, g]) => analyzeGame(l, g)],

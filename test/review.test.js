@@ -10,6 +10,9 @@ import { analyze, attribute, teamNewsSignal } from '../src/signals.js';
 import { memo, clearMemo } from '../src/http.js';
 
 const ROOT = path.join(import.meta.dirname, '..');
+// 테스트가 실제 AI 사용량 기록을 건드리지 않도록 임시 파일 사용
+import os from 'node:os';
+process.env.AI_USAGE_FILE = path.join(os.tmpdir(), `sp-usage-test-${process.pid}.json`);
 
 /* C1 / S10 / 경로 검사: 실제 서버를 띄워 확인 */
 function startServer(port, env = {}) {
@@ -240,4 +243,29 @@ test('AI 기사 분류: 모의 Claude 응답을 검증해 저장하고, 목록�
   fs.rmSync(new URL('../data/cache/ai-tags-test-tagger.json', import.meta.url), { force: true });
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.AI_TAG_ARTICLES;
+});
+
+test('AI 비용 계산: 실제 토큰 수 × 모델 단가, 기능·모델별 합계', async () => {
+  const { costOf, recordUsage, usageSummary } = await import('../src/usage.js');
+  const u = { input_tokens: 15000, output_tokens: 3000 };
+  assert.ok(Math.abs(costOf('claude-opus-5-5', u) - 0.12) < 1e-9);
+  assert.ok(Math.abs(costOf('claude-haiku-5-5', u) - 0.003) < 1e-9);
+  assert.equal(costOf('unknown-model', u), null);
+  // 캐시 읽기 토큰은 싼 단가
+  assert.ok(Math.abs(costOf('claude-opus-5-5', { cache_read_input_tokens: 1e6 }) - 0.2) < 1e-9);
+
+  const before = usageSummary().today;
+  const c = recordUsage('analysis', { model: 'claude-opus-5-5', usage: u });
+  recordUsage('tagging', { model: 'claude-haiku-5-5', usage: u });
+  assert.ok(Math.abs(c.costUsd - 0.12) < 1e-9);
+  const after = usageSummary().today;
+  assert.ok(Math.abs(after.cost - before.cost - 0.123) < 1e-9);
+  assert.equal(after.calls - before.calls, 2);
+  assert.equal(after.byFeature.analysis['claude-opus-5-5'].calls >= 1, true);
+});
+
+test('fallbacks 옵션은 지원 모델에만 (Haiku에 보내면 오류)', async () => {
+  const { fallbackParams } = await import('../src/config.js');
+  assert.deepEqual(fallbackParams('claude-haiku-5-5'), {});
+  assert.equal(fallbackParams('claude-opus-5-5').fallbacks, 'default');
 });

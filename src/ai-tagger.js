@@ -5,7 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { AI_TAG_MODEL, AI_TAG_DAILY_LIMIT } from './config.js';
+import { AI_TAG_MODEL, AI_TAG_DAILY_LIMIT, fallbackParams } from './config.js';
+import { recordUsage } from './usage.js';
 
 const aiEnabled = () => !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
@@ -123,12 +124,12 @@ async function runBatch(league, teams, batch) {
   const response = await anthropic.beta.messages.create({
     model: AI_TAG_MODEL,
     max_tokens: 16000,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
+    ...fallbackParams(AI_TAG_MODEL),
     output_config: { effort: 'low' },
     system: SYSTEM,
     messages: [{ role: 'user', content: buildPrompt(league, teams, batch) }],
   });
+  recordUsage('tagging', response);
   if (response.stop_reason === 'refusal') throw new Error('AI가 분류를 거절했습니다');
   const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
   const idMap = new Map(batch.map(({ id, key }) => [id, key]));

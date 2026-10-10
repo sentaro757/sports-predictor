@@ -64,7 +64,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."; $env:AI_TAG_ARTICLES = "1"; npm start
 ```
 
 - 최근 3일 기사 중 아직 분류하지 않은 것만 30건씩 묶어 백그라운드로 보냅니다. 결과는 `data/cache/ai-tags-<리그>.json` 에 저장해 같은 기사를 다시 보내지 않습니다.
-- 하루 최대 40회 호출(`AI_TAG_DAILY_LIMIT`). 모델은 `AI_TAG_MODEL`(기본은 `AI_MODEL`과 같음). 분류만 하는 작업이라 `claude-haiku-5-5` 로 바꾸면 비용이 크게 줄어듭니다.
+- 하루 최대 40회 호출(`AI_TAG_DAILY_LIMIT`). 모델은 `AI_TAG_MODEL`, 기본값은 `claude-haiku-5-5` 입니다(분류만 하는 작업이라 Opus 대비 비용 약 1/40).
 - 화면에서 AI가 분류한 기사에는 "AI 판단" 표시가 붙고, 상단에 AI/규칙 분류 건수가 나옵니다.
 
 **정확도 확인**
@@ -80,11 +80,23 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 npm start
 ```
 
-- 기본 모델은 `claude-opus-5-5` 입니다. 비용을 줄이려면 `$env:AI_MODEL = "claude-haiku-5-5"` 처럼 바꿀 수 있습니다.
+- 기본 모델은 `claude-opus-5-5` 입니다(`AI_MODEL` 로 변경).
 - 같은 경기는 3시간 동안 다시 분석하지 않습니다(캐시).
 - 비용 안전장치: 하루 최대 30회(`AI_DAILY_LIMIT` 으로 조정), 동시에 2건까지만 실행합니다.
 - 기사 내용은 신뢰할 수 없는 외부 데이터로 표시해 전달하고, AI가 낸 확률은 통계 예측에서 결과별 ±15%p 안으로 제한합니다. 형식이 잘못된 응답은 한 번 다시 시도하고, 그래도 안 되면 통계 예측을 그대로 보여줍니다.
 - AI가 요청을 거절하면 서버 쪽에서 다른 모델로 자동으로 다시 시도합니다(`fallbacks: "default"`).
+
+## AI 비용
+
+승부 확률 계산(Elo 통계모델)은 무료입니다. 비용은 AI 분석 버튼과 AI 기사 분류에서만 생깁니다.
+
+| 기능 | 기본 모델 | 1회 대략 비용 |
+|---|---|---|
+| AI 분석 버튼 (경기 1개) | `claude-opus-5-5` | 몇 센트 |
+| AI 기사 분류 (기사 30건) | `claude-haiku-5-5` | 약 $0.003 |
+
+- 화면 오른쪽 위에 **오늘 / 이번 달 비용**이 나오고, 누르면 기능·모델별 호출 수, 토큰 수, 금액이 나옵니다. AI 분석 결과에도 그 분석의 비용이 표시됩니다.
+- 금액은 API 응답에 기록된 **실제 토큰 수 × 정가**로 계산하고 `data/cache/ai-usage.json` 에 날짜별로 쌓습니다. 원화는 `USD_KRW`(기본 1400) 환율로 환산한 대략값이고, 실제 청구액은 Anthropic 콘솔에서 확인하세요.
 
 ## 팀 공식 홈페이지 뉴스 추가
 
@@ -113,7 +125,8 @@ src/model.js         Elo, 포아송(축구), 보정, 사후 검증
 src/signals.js       뉴스 키워드 분류, 부정문 처리, 기사 대상 팀 판단 (규칙)
 src/ai-tagger.js     기사 대상 팀·사건 AI 분류 (선택)
 src/service.js       리그별 데이터 취합과 경기 상세
-src/ai.js            Claude 분석 (선택)
+src/ai.js            Claude 경기 분석 (선택)
+src/usage.js         AI 사용량·비용 기록
 public/              대시보드 화면
 test/                회귀 테스트 (npm test)
 ```

@@ -112,6 +112,7 @@ async function loadLeague(refresh = false) {
       : '';
     $('#league-meta').innerHTML = `분석 경기 ${data.gamesUsed.toLocaleString()}개${bt} · ${fmtTime(data.updatedAt)} 업데이트${tagInfo}${warn}`;
     renderContent();
+    if (state.ai.tagging?.enabled) loadUsage(); // 기사 분류가 백그라운드로 돌았을 수 있음
   } catch (e) {
     $('#league-title').textContent = '오류';
     $('#content').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
@@ -295,13 +296,64 @@ async function openGame(gameId) {
   }
 }
 
+/* ---------- AI 비용 ---------- */
+const usd = (x) => (x >= 1 ? `$${x.toFixed(2)}` : `$${(x || 0).toFixed(x > 0 && x < 0.01 ? 4 : 3)}`);
+const krw = (x) => `${Math.round(x || 0).toLocaleString()}원`;
+const FEATURE_NAMES = { analysis: 'AI 분석 버튼', tagging: 'AI 기사 분류' };
+
+async function loadUsage() {
+  const c = state.ai;
+  let u = null;
+  try {
+    u = await api('/api/usage');
+  } catch {}
+  state.usage = u;
+  const mode = c.enabled ? `AI 사용 가능${c.tagging?.enabled ? ' · 기사 분류 켜짐' : ''}` : '통계모델 모드 (AI 꺼짐)';
+  const cost = u ? ` · 비용 오늘 ${usd(u.today.cost)} / 이번 달 ${usd(u.month.cost)}` : '';
+  $('#ai-status').innerHTML = `<button type="button" class="linklike" id="usage-open" title="AI 사용량과 비용 자세히 보기"><span class="dot"></span>${mode}${cost}</button>`;
+  $('#usage-open').addEventListener('click', openUsage);
+}
+
+function usageTable(period) {
+  const rows = Object.entries(period.byFeature).flatMap(([feature, models]) =>
+    Object.entries(models).map(
+      ([model, b]) => `<tr><td>${esc(FEATURE_NAMES[feature] || feature)}</td><td class="small">${esc(model)}</td>
+      <td class="num">${b.calls}</td><td class="num">${b.input.toLocaleString()}</td><td class="num">${b.output.toLocaleString()}</td>
+      <td class="num"><b>${usd(b.cost)}</b>${b.unpriced ? ' <span class="muted small">(가격 미등록 포함)</span>' : ''}</td></tr>`,
+    ),
+  );
+  if (!rows.length) return '<p class="muted small">사용 기록이 없습니다.</p>';
+  return `<div class="card"><table><thead><tr><th>기능</th><th>모델</th><th class="num">호출</th><th class="num">입력 토큰</th><th class="num">출력 토큰</th><th class="num">비용</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+}
+
+async function openUsage() {
+  await loadUsage();
+  const u = state.usage;
+  const c = state.ai;
+  $('#detail-body').innerHTML = u
+    ? `<h2 style="margin-top:0">AI 사용량과 비용</h2>
+      <p class="note">API 응답에 기록된 실제 토큰 수로 계산한 금액입니다(정가 기준). 원화는 1달러 = ${u.usdKrw.toLocaleString()}원으로 환산한 대략값이며, 실제 청구액은 Anthropic 콘솔에서 확인하세요.</p>
+      <div class="cols">
+        <div class="card box"><h4>오늘</h4><div class="big-prob">${usd(u.today.cost)}</div><div class="muted small">약 ${krw(u.today.krw)} · ${u.today.calls}회 호출</div></div>
+        <div class="card box"><h4>이번 달</h4><div class="big-prob">${usd(u.month.cost)}</div><div class="muted small">약 ${krw(u.month.krw)} · ${u.month.calls}회 호출</div></div>
+      </div>
+      <div class="section"><h3>오늘 상세</h3>${usageTable(u.today)}</div>
+      <div class="section"><h3>이번 달 상세</h3>${usageTable(u.month)}</div>
+      <div class="section"><h3>현재 설정</h3><ul class="mini">
+        <li>AI 분석 버튼: ${c.enabled ? esc(c.model) : '꺼짐 (ANTHROPIC_API_KEY 없음)'}</li>
+        <li>AI 기사 분류: ${c.tagging?.enabled ? esc(c.tagging.model) : '꺼짐 (AI_TAG_ARTICLES=1 로 켬)'}</li>
+      </ul></div>`
+    : '<div class="empty error">사용량을 불러오지 못했습니다.</div>';
+  $('#detail').showModal();
+}
+
 function aiSection() {
   if (!state.ai.enabled) {
     return `<div class="card ai-box"><b>AI 뉴스 분석 (꺼짐)</b>
       <p class="muted small">ANTHROPIC_API_KEY 를 설정하고 서버를 다시 시작하면, Claude가 기사 내용을 읽고 확률을 보정하며 이유를 설명합니다.</p></div>`;
   }
   return `<div class="card ai-box"><b>AI 뉴스 분석</b>
-    <p class="muted small">Claude(${esc(state.ai.model)})가 부상·이적·팀 기사 내용을 읽고 통계 예측을 보정합니다. 분석 1회당 API 요금이 발생합니다.</p>
+    <p class="muted small">Claude(${esc(state.ai.model)})가 부상·이적·팀 기사 내용을 읽고 통계 예측을 보정합니다. 분석 1회당 API 요금이 발생합니다(실제 금액은 분석 후 표시).</p>
     <button id="ai-run" class="btn" type="button">AI 분석 실행</button></div>`;
 }
 
@@ -311,6 +363,7 @@ async function runAi(gameId, g) {
   btn.textContent = '분석 중… (30초 정도 걸릴 수 있어요)';
   try {
     const r = await api(`/api/ai/${state.league}/${gameId}`, { method: 'POST' });
+    loadUsage();
     const soccer = state.data.league.sport === 'soccer';
     const name = (s) => esc(s === 'home' ? g.home.name : g.away.name);
     const factors = (r.factors || []).filter((f) => f && (f.team === 'home' || f.team === 'away'));
@@ -322,6 +375,7 @@ async function runAi(gameId, g) {
       <div style="margin:10px 0">${probBar(r.probs, soccer)}</div>
       <p>${esc(r.summary)}</p>
       ${r.clamped ? '<p class="note">AI가 제시한 확률이 통계 예측과 너무 달라 허용 범위(±15%p) 안으로 조정했습니다.</p>' : ''}
+      ${r.cost ? `<p class="note">이번 분석 비용 ${r.cost.unpriced ? '(가격 미등록 모델) ' : ''}<b>${usd(r.cost.usd)}</b> (약 ${krw(r.cost.krw)}) · 호출 ${r.cost.calls}회 · 입력 ${r.cost.inputTokens.toLocaleString()} / 출력 ${r.cost.outputTokens.toLocaleString()} 토큰${r.cached ? ' · 3시간 내 같은 경기는 저장된 결과라 추가 비용 없음' : ''}</p>` : ''}
       ${factors.map((f) => `<div class="factor"><span class="${f.impact === '+' ? 'pos' : 'neg'}">${f.impact === '+' ? '▲' : '▼'}</span> <b>${name(f.team)}</b> ${esc(f.text)}${srcLinks(f)}</div>`).join('')}
     </div>`;
   } catch (e) {
@@ -348,7 +402,7 @@ $('#detail').addEventListener('click', (e) => e.target === e.currentTarget && e.
   state.catalog = c.sports;
   state.ai = c.ai;
   $('#ai-status').className = `ai-status ${c.ai.enabled ? 'on' : ''}`;
-  $('#ai-status').innerHTML = `<span class="dot"></span>${c.ai.enabled ? 'AI 분석 사용 가능' : '통계모델 모드 (AI 꺼짐)'}`;
+  loadUsage();
 
   const nav = loadNav();
   const sport = state.catalog.find((s) => s.id === nav.sport) || state.catalog[0];
