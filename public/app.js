@@ -200,10 +200,13 @@ const articleHtml = (a) => `<div class="card item">
 
 function renderNews(d) {
   const main = d.news.length ? d.news.map(articleHtml).join('') : '<div class="empty">뉴스가 없습니다.</div>';
+  const official = d.officialNews?.length
+    ? `<div class="day">구단 공식 뉴스 (최신 ${d.officialNews.length}건 · 팀별 전체는 경기 상세에서)</div><div class="list">${d.officialNews.map(articleHtml).join('')}</div>`
+    : '';
   const ko = d.koNews?.length
     ? `<div class="day">국내 언론 (해당 종목 해외 소식 전체)</div><div class="list">${d.koNews.map(articleHtml).join('')}</div>`
     : '';
-  return `<div class="list">${main}</div>${ko}`;
+  return `<div class="day">언론 보도</div><div class="list">${main}</div>${official}${ko}`;
 }
 
 function renderInjuries(d) {

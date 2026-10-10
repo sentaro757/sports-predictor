@@ -108,6 +108,8 @@ export function analyze(text) {
           : KO_NEG_AFTER.test(after);
         if (tag === 'return' && !isAscii(word) && KO_RANK_RETURN.test(before)) continue;
         if (tag === 'return' && isAscii(word) && EN_RETURN_IDIOM_BEFORE.test(before)) continue;
+        // "return to form"(기량 회복), "return home" 은 부상 복귀가 아니다
+        if (tag === 'return' && isAscii(word) && /^\s+(to (his |her |their )?(best |old )?form|home)\b/.test(t.slice(index + word.length, index + word.length + 30))) continue;
         if ((tag === 'return' || tag === 'injury') && COACH_SUBJECT_BEFORE.test(before.slice(-30))) continue;
         if (tag === 'coach' && !COACH_CONTEXT.test(t.slice(Math.max(0, index - 30), index + word.length + 30))) continue;
         if (tag === 'return' && negated) hits.push({ tag: 'injury', index, len: word.length }); // "not available", "복귀 불발" → 악재

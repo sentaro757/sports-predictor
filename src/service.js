@@ -43,7 +43,7 @@ export function leagueData(leagueId) {
       s.getNews(league, warn).catch((e) => (warn(`뉴스 수집 실패: ${e.message}`), [])),
       s.getInjuries(league, warn).catch(() => null),
       s.getTransactions(league, warn).catch(() => null),
-      getTeamFeedNews(league.id),
+      getTeamFeedNews(league.id, warn),
       koreanNewsFor(league, warn),
     ]);
     if (!history.length) warn('과거 경기 결과가 없습니다 — 예측이 모두 50:50에 가깝게 나옵니다');
@@ -184,7 +184,8 @@ export async function leagueOverview(leagueId) {
     games,
     results,
     rankings,
-    news: data.articles.slice(0, 60),
+    news: data.articles.filter((a) => !a.official).slice(0, 60),
+    officialNews: data.articles.filter((a) => a.official).slice(0, 40), // 구단 공식 뉴스는 따로 (많아서 일반 뉴스를 덮지 않게)
     koNews: data.koNews.slice(0, 40),
     injuries: data.injuries ? data.injuries.slice().sort(byDateDesc).slice(0, 150) : injuryArticles.slice(0, 60),
     injuriesStructured: !!data.injuries,
@@ -210,7 +211,8 @@ export async function gameDetail(leagueId, gameId) {
     .slice(0, 6);
   const side = (s) => ({
     team: slimTeam(data, game[s]),
-    news: ctx[s].articles.slice(0, 12),
+    // 언론 보도 8건 + 구단 공식 6건 (공식 기사가 많아 보도를 덮지 않게), 최신순
+    news: [...ctx[s].articles.filter((a) => !a.official).slice(0, 8), ...ctx[s].articles.filter((a) => a.official).slice(0, 6)].sort(byDateDesc),
     injuries: ctx[s].injuries,
     injuryNews: ctx[s].injuryNews.slice(0, 8),
     transactions: ctx[s].transactions.slice(0, 8),

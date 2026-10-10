@@ -407,3 +407,9 @@ test('R8: 캐시 청소는 네트워크 캐시 파일만 지운다 (비용 기�
   for (const k of ['usage', 'tags', 'other']) assert.ok(fs.existsSync(path.join(dir, files[k])), `${files[k]} 보존`);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('"return to form"(기량 회복)·"return home"은 부상 복귀가 아니다', () => {
+  assert.ok(!analyze('How Cowser believes he can return to form in 2027').tags.includes('return'));
+  assert.ok(!analyze('Allegri set to return home').tags.includes('return'));
+  assert.ok(analyze('Judge set to return from injury this weekend').tags.includes('return'));
+});
