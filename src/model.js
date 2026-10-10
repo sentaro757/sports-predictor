@@ -210,8 +210,12 @@ function formAdj(results, sport) {
 
 /**
  * 부상자 감점. 같은 선수는 한 번만 센다.
- * 복귀 예정일이 3주 넘게 남은 장기 결장은 이미 최근 성적(Elo)에 반영됐다고 보고 가중치를 낮춘다.
+ * 이미 결장한 경기 수(gamesMissed, src/injury-tracker.js)만큼은 그 공백이 최근 성적(Elo)에 반영됐다고 보고
+ * 감점을 줄인다: 결장 10경기면 최대 70% 할인. 결장 기록이 없는 새 부상은 복귀 예정일과 상관없이 전액 감점.
  */
+export const REFLECTED_PER_GAME = 0.07;
+export const REFLECTED_MAX = 0.7;
+
 export function injuryAdj(injuries, sport) {
   const p = MODEL[sport];
   const seen = new Set();
@@ -222,9 +226,7 @@ export function injuryAdj(injuries, sport) {
     seen.add(who);
     const s = (i.status || '').toLowerCase();
     let w = /\bout\b|injured list|\bil\b|suspend/.test(s) ? 1 : /day|questionable|doubt|gtd/.test(s) ? 0.5 : 0.33;
-    const ret = i.returnDate ? Date.parse(i.returnDate) : NaN;
-    if (Number.isFinite(ret) && ret - Date.now() > 21 * 86400e3) w *= 0.3;
-    else if (/season|60-day/.test(`${s} ${i.detail || ''}`.toLowerCase())) w *= 0.3;
+    w *= 1 - Math.min(REFLECTED_MAX, (i.gamesMissed || 0) * REFLECTED_PER_GAME);
     pen += p.injury * w;
   }
   return -Math.min(pen, p.injuryCap);

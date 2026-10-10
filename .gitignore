@@ -1,3 +1,4 @@
 node_modules/
 data/cache/
 test/fixtures/*.local.json
+data/state/

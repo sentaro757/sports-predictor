@@ -1,8 +1,7 @@
-// AI 사용량·비용 기록. API 응답의 usage(실제 토큰 수)로 계산해 data/cache/ai-usage.json 에 날짜별로 저장한다.
-import fs from 'node:fs';
-import path from 'node:path';
+// AI 사용량·비용 기록. API 응답의 usage(실제 토큰 수)로 계산해 data/state/ai-usage.json 에 날짜별로 저장한다.
+import { readJson, withFileLock, writeJsonSync } from './store.js';
 
-const FILE = process.env.AI_USAGE_FILE || path.join(import.meta.dirname, '..', 'data', 'cache', 'ai-usage.json');
+const FILE = 'ai-usage.json';
 const KEEP_DAYS = 120;
 export const USD_KRW = Number(process.env.USD_KRW || 1400); // 원화 환산용 환율 (대략값)
 
@@ -39,54 +38,36 @@ export function costOf(model, usage) {
 
 const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
 
-let data = null;
-function load() {
-  if (!data) {
-    try {
-      data = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    } catch {
-      data = { days: {} };
-    }
-  }
-  return data;
-}
-
-let saving = Promise.resolve();
-function save() {
-  const snapshot = JSON.stringify(data);
-  saving = saving.then(async () => {
-    const tmp = `${FILE}.${process.pid}.tmp`;
-    try {
-      await fs.promises.mkdir(path.dirname(FILE), { recursive: true });
-      await fs.promises.writeFile(tmp, snapshot);
-      await fs.promises.rename(tmp, FILE);
-    } catch (e) {
-      console.warn(`[usage] 저장 실패: ${e.message}`);
-    }
-  });
-  return saving;
-}
+const load = () => readJson(FILE, { days: {} });
 
 /**
  * API 응답 한 건을 기록하고 그 호출의 비용 정보를 돌려준다.
  * feature: 'analysis' (AI 분석 버튼) | 'tagging' (기사 분류)
+ * 서버를 두 개 띄워도 기록이 서로 덮이지 않도록 잠금 아래에서 "읽고 → 더하고 → 저장"한다.
  */
 export function recordUsage(feature, response) {
-  const d = load();
   const day = kstDay();
   const model = response?.model || 'unknown';
   const u = response?.usage || {};
   const cost = costOf(model, u);
-  const bucket = (((d.days[day] ||= {})[feature] ||= {}))[model] ||= { calls: 0, input: 0, output: 0, cost: 0, unpriced: 0 };
-  bucket.calls++;
-  bucket.input += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-  bucket.output += u.output_tokens || 0;
-  if (cost == null) bucket.unpriced++;
-  else bucket.cost += cost;
-  // 오래된 날짜 정리
-  const cutoff = new Date(Date.now() + 9 * 3600e3 - KEEP_DAYS * 86400e3).toISOString().slice(0, 10);
-  for (const k of Object.keys(d.days)) if (k < cutoff) delete d.days[k];
-  save();
+  try {
+    withFileLock('ai-usage', () => {
+      const d = load();
+      d.days ||= {};
+      const bucket = (((d.days[day] ||= {})[feature] ||= {}))[model] ||= { calls: 0, input: 0, output: 0, cost: 0, unpriced: 0 };
+      bucket.calls++;
+      bucket.input += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      bucket.output += u.output_tokens || 0;
+      if (cost == null) bucket.unpriced++;
+      else bucket.cost += cost;
+      // 보존 기간(120일) 지난 날짜 정리 — 이 파일은 캐시 청소 대상이 아니다
+      const cutoff = new Date(Date.now() + 9 * 3600e3 - KEEP_DAYS * 86400e3).toISOString().slice(0, 10);
+      for (const k of Object.keys(d.days)) if (k < cutoff) delete d.days[k];
+      writeJsonSync(FILE, d);
+    });
+  } catch (e) {
+    console.warn(`[usage] 기록 실패: ${e.message}`);
+  }
   return { model, inputTokens: u.input_tokens || 0, outputTokens: u.output_tokens || 0, costUsd: cost, costKrw: cost == null ? null : Math.round(cost * USD_KRW) };
 }
 
@@ -103,7 +84,7 @@ export function usageSummary() {
   const sum = (filter) => {
     const total = empty();
     const byFeature = {};
-    for (const [day, features] of Object.entries(d.days)) {
+    for (const [day, features] of Object.entries(d.days || {})) {
       if (!filter(day)) continue;
       for (const [feature, models] of Object.entries(features)) {
         for (const [model, b] of Object.entries(models)) {

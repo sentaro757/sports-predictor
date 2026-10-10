@@ -6,6 +6,7 @@ import { attribute, buildRosterIndex, teamNewsSignal } from './signals.js';
 import * as naver from './sources/naver.js';
 import * as espn from './sources/espn.js';
 import { getTeamFeedNews } from './sources/feeds.js';
+import { annotateInjuries } from './injury-tracker.js';
 
 const src = (league) => (league.source === 'naver' ? naver : espn);
 const byDateDesc = (a, b) => Date.parse(b.date || 0) - Date.parse(a.date || 0);
@@ -64,7 +65,10 @@ export function leagueData(leagueId) {
       const rule = attribute(a, teams, (a.teamIds || []).filter((id) => teamMap.has(id)), roster);
       const ai = cachedTags(league.id, a);
       const ids = new Set([...rule.teamIds, ...(ai?.events || []).map((e) => e.teamId)]);
-      const impacts = ai ? ai.events.filter((e) => IMPACT_TAGS.has(e.tag)).map(({ teamId, tag }) => ({ teamId, tag })) : rule.impacts;
+      // 선수 정보도 넘긴다 (같은 선수의 같은 사건을 여러 기사가 다뤄도 1건으로 세기 위해)
+      const impacts = ai
+        ? ai.events.filter((e) => IMPACT_TAGS.has(e.tag)).map(({ teamId, tag, player }) => ({ teamId, tag, player: player || null }))
+        : rule.impacts;
       const tags = ai ? [...new Set([...rule.tags.filter((t) => !IMPACT_TAGS.has(t)), ...ai.events.map((e) => e.tag)])] : rule.tags;
       return {
         ...a,
@@ -94,7 +98,8 @@ export function leagueData(leagueId) {
       upcoming,
       articles,
       koNews: koNews.sort(byDateDesc),
-      injuries, // null 이면 구조화 데이터 없음(국내 리그, 유럽 축구)
+      // null 이면 구조화 데이터 없음(국내 리그, 유럽 축구). 있으면 결장 시작 시점·결장 경기 수를 붙인다
+      injuries: injuries && annotateInjuries(league.id, injuries, history),
       transactions,
       model,
       warnings: [...warnings],

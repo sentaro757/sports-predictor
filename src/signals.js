@@ -176,7 +176,7 @@ function findPlayers(t, roster) {
     for (const m of t.matchAll(e.re)) {
       // 이미 더 긴 이름으로 잡힌 위치 안이면 건너뛴다
       if (out.some((p) => m.index >= p.index && m.index < p.index + p.len)) continue;
-      out.push({ teamId: e.teamId, index: m.index, len: m[0].length, kind: 'player' });
+      out.push({ teamId: e.teamId, index: m.index, len: m[0].length, kind: 'player', name: e.name });
     }
   }
   return out;
@@ -229,14 +229,15 @@ function findNameWithTeam(t, teams) {
   for (const m of t.matchAll(/([가-힣a-z]{2,8})\(([^()]{1,12})\)/g)) {
     const inner = m[2].trim();
     const team = teams.find((tm) => (tm.aliases || []).some((a) => a.toLowerCase() === inner));
-    if (team) out.push({ teamId: team.id, index: m.index, len: m[1].length, kind: 'player' });
+    if (team) out.push({ teamId: team.id, index: m.index, len: m[1].length, kind: 'player', name: m[1] });
   }
   return out;
 }
 
-/** 한 신호(hit)의 대상 팀 고르기. 근거가 애매하면 null */
+/** 한 신호(hit)의 대상 팀(과 근거가 된 선수) 고르기. 근거가 애매하면 null */
 function pickTarget(hit, entities) {
   const scored = new Map(); // teamId -> best score
+  const playerOf = new Map(); // teamId -> 가장 높은 점수를 준 선수 이름
   for (const e of entities) {
     if (e.kind === 'team' && e.opponent) continue;
     const d = e.index < hit.index ? hit.index - (e.index + e.len) : e.index - (hit.index + hit.len);
@@ -244,12 +245,15 @@ function pickTarget(hit, entities) {
     if (e.subject) s += 2;
     if (d <= 2) s += 2; // 바로 붙어 있음 ("LG 주전 부상", "injured Saka", "injury-hit Liverpool")
     s += 2 * Math.exp(-Math.max(d, 0) / 20);
-    if (s > (scored.get(e.teamId) ?? -Infinity)) scored.set(e.teamId, s);
+    if (s > (scored.get(e.teamId) ?? -Infinity)) {
+      scored.set(e.teamId, s);
+      playerOf.set(e.teamId, e.kind === 'player' ? e.name : null);
+    }
   }
   const ranked = [...scored.entries()].sort((a, b) => b[1] - a[1]);
   if (!ranked.length) return null;
   if (ranked.length > 1 && ranked[0][1] - ranked[1][1] < 0.75) return null; // 비슷하면 판단 보류
-  return ranked[0][0];
+  return { teamId: ranked[0][0], player: playerOf.get(ranked[0][0]) || null };
 }
 
 /**
@@ -293,10 +297,11 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
       let pool = all.filter(inSpan(ci));
       for (let back = 1; !usable(pool) && back <= (isTitle ? 3 : 1); back++) pool = all.filter(inSpan(ci - back));
       if (isTitle && !usable(pool)) pool = all.filter(inSpan(ci + 1));
-      const teamId = pickTarget(h, pool);
+      const target = pickTarget(h, pool);
+      const teamId = target?.teamId;
       // 제목이 이미 이 팀에 대해 판단했으면 요약은 덧붙이지 않는다 (제목이 기사의 핵심 주장)
       if (!isTitle && impacts.some((x) => x.teamId === teamId && x.fromTitle)) continue;
-      if (teamId && !impacts.some((x) => x.teamId === teamId && x.tag === h.tag)) impacts.push({ teamId, tag: h.tag, fromTitle: isTitle });
+      if (teamId && !impacts.some((x) => x.teamId === teamId && x.tag === h.tag)) impacts.push({ teamId, tag: h.tag, player: target.player, fromTitle: isTitle });
     }
   }
   // "김경문 감독의 마지막 인사…함께 떠난다"처럼 제목에 팀이 없으면, 요약에 (상대팀이 아닌) 팀이 하나뿐일 때 그 팀으로 본다
@@ -307,30 +312,52 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
     }
   }
   const { tags } = analyze(`${title}\n${summary}`);
-  return { teamIds: [...teamIds], tags, impacts: impacts.map(({ teamId, tag }) => ({ teamId, tag })), by: 'rule' };
+  return { teamIds: [...teamIds], tags, impacts: impacts.map(({ teamId, tag, player }) => ({ teamId, tag, player: player || null })), by: 'rule' };
 }
 
+/** 선수 이름 정규화: 영어는 성(마지막 단어)으로 ("Bukayo Saka" = "Saka"), 한국어는 공백 제거 */
+function playerKey(name) {
+  const s = String(name || '').toLowerCase().trim();
+  if (!s) return '';
+  return /^[a-z]/.test(s) ? s.split(/\s+/).at(-1) : s.replace(/\s+/g, '');
+}
+
+const kstDay = (iso) => new Date(Date.parse(iso) + 9 * 3600e3).toISOString().slice(0, 10);
+
 /**
- * 최근 기사들에서 한 팀의 뉴스 신호를 계산한다.
- *  - 그 팀이 신호 대상(impacts)인 기사만 센다
- *  - 같은 사건을 다룬 기사(제목 앞부분이 같은 기사)는 한 번만
+ * 최근 기사들에서 한 팀의 뉴스 신호를 계산한다. 기사 수가 아니라 "사건" 수를 센다.
+ *  - 그 팀이 신호 대상(impacts)인 기사만 본다
+ *  - 사건 = 선수 + 유형. 같은 선수의 부상 기사가 여러 건이어도 1건이다.
+ *    같은 선수에게 부상과 복귀가 둘 다 있으면 가장 최근 기사 쪽을 따른다.
+ *  - 선수를 알 수 없는 기사는 같은 날·같은 유형을 1건으로 묶는다
+ *  - 감독 교체는 기간 내 1건
  *  - 구조화된 부상 명단이 있는 리그는 기사 속 부상은 세지 않는다 (명단과 중복)
  *  - 악재/호재 각각 최대 3건
  */
 export function teamNewsSignal(articles, teamId, { ignoreInjury = false, sinceMs = 3 * 86400e3 } = {}) {
   const cutoff = Date.now() - sinceMs;
-  const seen = new Set();
-  let neg = 0;
-  let pos = 0;
+  const events = new Map(); // 사건 키 -> { tag, t }
   for (const a of articles) {
     if (!a.date || Date.parse(a.date) < cutoff) continue;
-    const mine = (a.impacts || []).filter((x) => x.teamId === teamId).map((x) => x.tag);
-    if (!mine.length) continue;
-    const key = (a.title || '').toLowerCase().replace(/[^0-9a-z가-힣]/g, '').slice(0, 16);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (mine.includes('coach') || (!ignoreInjury && mine.includes('injury'))) neg++;
-    if (mine.includes('return')) pos++;
+    const t = Date.parse(a.date);
+    for (const x of a.impacts || []) {
+      if (x.teamId !== teamId) continue;
+      if (x.tag === 'injury' && ignoreInjury) continue;
+      let key;
+      if (x.tag === 'coach') key = 'coach';
+      else if (x.tag === 'injury' || x.tag === 'return') {
+        const p = playerKey(x.player);
+        key = p ? `player:${p}` : `anon:${x.tag}:${kstDay(a.date)}`;
+      } else continue;
+      const prev = events.get(key);
+      if (!prev || t > prev.t) events.set(key, { tag: x.tag, t });
+    }
+  }
+  let neg = 0;
+  let pos = 0;
+  for (const { tag } of events.values()) {
+    if (tag === 'return') pos++;
+    else neg++;
   }
   neg = Math.min(neg, 3);
   pos = Math.min(pos, 3);

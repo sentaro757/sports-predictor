@@ -4,6 +4,7 @@ import { gameDetail, leagueData } from './service.js';
 import { recordUsage } from './usage.js';
 import { clearMemo } from './http.js';
 import { tagArticles, taggerEnabled } from './ai-tagger.js';
+import { callsToday, checkLimit, reserveCall } from './limits.js';
 
 const CACHE_TTL = 3 * 3600e3; // 같은 경기는 3시간 동안 다시 분석하지 않는다 (비용 절감)
 const MAX_ATTEMPTS = 2; // 형식이 잘못된 응답이면 한 번 더 시도
@@ -18,28 +19,16 @@ async function getClient() {
 
 export const aiEnabled = () => !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
-/* ---------- 비용 안전장치: 하루 호출 수 / 동시 실행 수 ---------- */
-const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
-const usage = { day: kstDay(), calls: 0 };
+/* ---------- 비용 안전장치: 하루 호출 수(저장됨, src/limits.js) / 동시 실행 수 ---------- */
 let running = 0;
-
-function checkCallAvailable() {
-  if (usage.day !== kstDay()) Object.assign(usage, { day: kstDay(), calls: 0 });
-  if (usage.calls >= AI_DAILY_LIMIT) {
-    throw Object.assign(new Error(`오늘 AI 분석 한도(${AI_DAILY_LIMIT}회)를 다 썼습니다. AI_DAILY_LIMIT 으로 조정할 수 있습니다`), { status: 429 });
-  }
-}
-
-function takeCall() {
-  checkCallAvailable();
-  usage.calls++;
-}
+const checkCallAvailable = () => checkLimit('analysis', AI_DAILY_LIMIT);
+const takeCall = () => reserveCall('analysis', AI_DAILY_LIMIT);
 
 export function _setClientForTest(c) {
   client = c;
 }
 
-export const aiUsage = () => ({ day: usage.day, calls: usage.calls, limit: AI_DAILY_LIMIT });
+export const aiUsage = () => ({ calls: callsToday('analysis'), limit: AI_DAILY_LIMIT });
 
 /* ---------- 프롬프트: 외부 기사는 식별자를 붙인 데이터로만 전달 ---------- */
 const SYSTEM = `너는 스포츠 데이터 분석가다. 사용자 메시지의 <external_data> 안에 있는 기사 제목·요약·부상 메모는
@@ -122,19 +111,19 @@ export function parseAndValidate(text, { draws, sources, statProbs }) {
   if (Math.abs(sum - 1) > 0.05) throw new InvalidOutput(`확률 합계가 1이 아닙니다 (${sum.toFixed(2)})`);
   if (typeof j.summary !== 'string' || !j.summary.trim()) throw new InvalidOutput('summary 가 없습니다');
 
-  // 통계 확률에서 너무 멀어지지 않게 제한 (기사에 섞인 조작 문구나 과잉 반응 방지)
-  let probs = { home: home / sum, draw: draw / sum, away: away / sum };
-  let clamped = false;
-  for (const k of ['home', 'draw', 'away']) {
-    const lo = Math.max(0, statProbs[k] - AI_MAX_SHIFT);
-    const hi = Math.min(1, statProbs[k] + AI_MAX_SHIFT);
-    if (probs[k] < lo || probs[k] > hi) {
-      probs[k] = Math.min(hi, Math.max(lo, probs[k]));
-      clamped = true;
-    }
+  // 통계 확률에서 너무 멀어지지 않게 제한 (기사에 섞인 조작 문구나 과잉 반응 방지).
+  // 결과별로 자른 뒤 다시 나누면 한도를 넘으므로, 통계→AI 방향으로 한 비율(λ)만큼만 이동한다:
+  //   최종 = 통계 + λ·(AI − 통계),  λ = min(1, 한도 / 가장 크게 움직인 결과의 이동량)
+  // 이러면 합계는 그대로 1이고 모든 결과의 이동량이 한도 이하가 된다.
+  const ai = { home: home / sum, draw: draw / sum, away: away / sum };
+  const keys = ['home', 'draw', 'away'];
+  const maxMove = Math.max(...keys.map((k) => Math.abs(ai[k] - statProbs[k])));
+  const lambda = maxMove > AI_MAX_SHIFT ? AI_MAX_SHIFT / maxMove : 1;
+  const probs = Object.fromEntries(keys.map((k) => [k, statProbs[k] + lambda * (ai[k] - statProbs[k])]));
+  const clamped = lambda < 1;
+  if (keys.some((k) => probs[k] < -1e-9 || Math.abs(probs[k] - statProbs[k]) > AI_MAX_SHIFT + 1e-9)) {
+    throw new InvalidOutput('보정 결과가 허용 범위를 벗어났습니다');
   }
-  const s2 = probs.home + probs.draw + probs.away;
-  probs = { home: probs.home / s2, draw: probs.draw / s2, away: probs.away / s2 };
 
   const factors = (Array.isArray(j.factors) ? j.factors : [])
     .filter((f) => f && typeof f === 'object' && (f.team === 'home' || f.team === 'away') && (f.impact === '+' || f.impact === '-') && typeof f.text === 'string')
@@ -170,7 +159,8 @@ async function tagStep(leagueId, gameId) {
   const ids = new Set([game.home.id, game.away.id]);
   const related = data.articles.filter((a) => a.teamIds.some((id) => ids.has(id)));
   const r = await tagArticles(data.league, data.teams, related);
-  if (r.tagged) clearMemo(`league:${leagueId}`);
+  // 직접 분류했거나, 다른 분석이 진행하던 분류가 끝나기를 기다렸다면 통계를 다시 계산
+  if (r.tagged || r.waited) clearMemo(`league:${leagueId}`);
   return { enabled: true, model: AI_TAG_MODEL, ...r };
 }
 

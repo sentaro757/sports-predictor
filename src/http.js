@@ -58,13 +58,20 @@ async function writeDisk(key, entry) {
   }
 }
 
-function sweepDisk() {
-  const now = Date.now();
-  for (const name of fs.readdirSync(CACHE_DIR)) {
-    const file = path.join(CACHE_DIR, name);
+// 네트워크 응답 캐시 파일(sha1 해시 이름)만 정리한다. 다른 이름의 파일은 절대 지우지 않는다
+// (비용 기록·AI 분류 같은 보관용 상태는 data/state/ 에 있고, 각자 보존 기간으로 정리된다)
+const CACHE_FILE = /^[0-9a-f]{40}\.json$/;
+const CACHE_TMP = /^[0-9a-f]{40}\.json\.\d+\.[0-9a-f]+\.tmp$/;
+
+export function sweepDisk(dir = CACHE_DIR, now = Date.now()) {
+  for (const name of fs.readdirSync(dir)) {
+    const isCache = CACHE_FILE.test(name);
+    const isTmp = CACHE_TMP.test(name);
+    if (!isCache && !isTmp) continue;
+    const file = path.join(dir, name);
     try {
-      const st = fs.statSync(file);
-      if (name.endsWith('.tmp') ? now - st.mtimeMs > 3600e3 : now - st.mtimeMs > DISK_MAX_AGE) fs.unlinkSync(file);
+      const age = now - fs.statSync(file).mtimeMs;
+      if (isTmp ? age > 3600e3 : age > DISK_MAX_AGE) fs.unlinkSync(file);
     } catch {}
   }
 }

@@ -12,7 +12,9 @@ import { memo, clearMemo } from '../src/http.js';
 const ROOT = path.join(import.meta.dirname, '..');
 // 테스트가 실제 AI 사용량 기록을 건드리지 않도록 임시 파일 사용
 import os from 'node:os';
-process.env.AI_USAGE_FILE = path.join(os.tmpdir(), `sp-usage-test-${process.pid}.json`);
+import fs from 'node:fs';
+// (비용 기록·호출 한도·AI 분류·부상 추적 모두 data/state 대신 임시 폴더에)
+process.env.SP_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-state-test-'));
 
 /* C1 / S10 / 경로 검사: 실제 서버를 띄워 확인 */
 function startServer(port, env = {}) {
@@ -104,7 +106,7 @@ test('S5: "삼성전 앞둔 LG 주전 부상"은 LG에만 부상 신호', () => 
     { id: 'LG', aliases: ['LG', '트윈스'] },
   ];
   const r = attribute({ title: '삼성전 앞둔 LG 주전 부상', summary: '' }, teams);
-  assert.deepEqual(r.impacts, [{ teamId: 'LG', tag: 'injury' }]);
+  assert.deepEqual(r.impacts.map(({ teamId, tag }) => ({ teamId, tag })), [{ teamId: 'LG', tag: 'injury' }]);
   assert.ok(r.teamIds.includes('SS'), '언급 팀 목록에는 남는다');
 });
 
@@ -128,8 +130,13 @@ test('S6: 같은 사건 기사 중복 제거 + 구조화 부상 리그는 기사
   assert.equal(teamNewsSignal(arts, 'T', { ignoreInjury: true }).neg, 0);
   const dup = [{ player: 'A', status: 'Out' }, { player: 'A', status: 'Out' }];
   assert.equal(injuryAdj(dup, 'basketball'), injuryAdj([dup[0]], 'basketball'));
-  const longTerm = [{ player: 'B', status: 'Out', returnDate: new Date(Date.now() + 60 * 86400e3).toISOString() }];
-  assert.ok(Math.abs(injuryAdj(longTerm, 'basketball')) < Math.abs(injuryAdj([{ player: 'B', status: 'Out' }], 'basketball')));
+  // R3: 이미 여러 경기 결장한 선수만 할인. 새 부상은 복귀 예정일이 멀어도 전액 감점
+  const fresh = injuryAdj([{ player: 'B', status: 'Out', gamesMissed: 0, returnDate: new Date(Date.now() + 60 * 86400e3).toISOString() }], 'basketball');
+  const soon = injuryAdj([{ player: 'B', status: 'Out', gamesMissed: 0, returnDate: new Date(Date.now() + 7 * 86400e3).toISOString() }], 'basketball');
+  const longOut = injuryAdj([{ player: 'B', status: 'Out', gamesMissed: 12 }], 'basketball');
+  assert.equal(fresh, soon, '복귀 예정일만으로는 할인하지 않는다');
+  assert.equal(fresh, -18);
+  assert.ok(Math.abs(longOut) < Math.abs(fresh) && Math.abs(longOut) > 0);
 });
 
 test('S7: clearMemo 이후 늦게 끝난 이전 계산이 새 값을 덮지 않는다', async () => {
@@ -204,7 +211,6 @@ test('선수(팀) 표기와 선수 이름 속 키워드: "이탈로(제주)"의 
 test('AI 기사 분류: Haiku 로 분류, 응답 검증·저장, 목록에 없는 팀·유형은 버림, 재분류 안 함', async () => {
   process.env.ANTHROPIC_API_KEY = 'test-key';
   delete process.env.AI_TAG_ARTICLES; // 기본값: API 키가 있으면 켜짐
-  const fs = await import('node:fs');
   const T = await import('../src/ai-tagger.js');
   const calls = [];
   T._setClientForTest({
@@ -247,7 +253,6 @@ test('AI 기사 분류: Haiku 로 분류, 응답 검증·저장, 목록에 없�
 
   process.env.AI_TAG_ARTICLES = '0';
   assert.equal(T.taggerEnabled(), false, 'AI_TAG_ARTICLES=0 이면 분류를 건너뛴다');
-  fs.rmSync(new URL('../data/cache/ai-tags-test-tagger.json', import.meta.url), { force: true });
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.AI_TAG_ARTICLES;
 });
@@ -275,4 +280,130 @@ test('fallbacks 옵션은 지원 모델에만 (Haiku에 보내면 오류)', asyn
   const { fallbackParams } = await import('../src/config.js');
   assert.deepEqual(fallbackParams('claude-haiku-5-5'), {});
   assert.equal(fallbackParams('claude-opus-5-5').fallbacks, 'default');
+});
+
+/* ---------- 2차 리뷰 (R1~R8) 재현 사례 ---------- */
+
+test('R1: AI 보정 후 최종 확률도 결과별 ±15%p 이내, 합계 1', async () => {
+  const { parseAndValidate } = await import('../src/ai.js');
+  const stat = { home: 0.4, draw: 0.3, away: 0.3 };
+  const r = parseAndValidate(JSON.stringify({ home: 1, draw: 0, away: 0, summary: 's' }), { draws: true, sources: new Map(), statProbs: stat });
+  for (const k of ['home', 'draw', 'away']) assert.ok(Math.abs(r.probs[k] - stat[k]) <= 0.15 + 1e-9, `${k}: ${r.probs[k]}`);
+  assert.ok(Math.abs(r.probs.home + r.probs.draw + r.probs.away - 1) < 1e-9);
+  assert.ok(r.clamped);
+  assert.ok(Math.abs(r.probs.home - 0.55) < 1e-9, '홈은 정확히 한도만큼만 이동');
+});
+
+test('R4: 같은 선수의 같은 부상을 다룬 기사 3건은 1건 (선수 명단 유무 모두)', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const teams = [{ id: 'LG', aliases: ['LG', '트윈스'] }, { id: 'SS', aliases: ['삼성'] }];
+  const now = new Date().toISOString();
+  const titles = ['LG 김현수 무릎 부상으로 결장', '김현수 무릎 부상, LG 선발 제외', 'LG 타선 비상…김현수 부상 이탈'];
+  for (const roster of [buildRosterIndex([{ name: '김현수', teamId: 'LG' }]), buildRosterIndex([])]) {
+    const arts = titles.map((title) => ({ title, date: now, ...attribute({ title, summary: '' }, teams, [], roster) }));
+    assert.equal(teamNewsSignal(arts, 'LG').neg, 1, roster.entries.length ? '명단 있음' : '명단 없음');
+  }
+  // 서로 다른 선수 두 명은 2건
+  const two = ['LG 김현수 부상', 'LG 오지환 부상'].map((title) => ({
+    title, date: now, ...attribute({ title, summary: '' }, teams, [], buildRosterIndex([{ name: '김현수', teamId: 'LG' }, { name: '오지환', teamId: 'LG' }])),
+  }));
+  assert.equal(teamNewsSignal(two, 'LG').neg, 2);
+  // 같은 선수가 부상 뒤 복귀하면 최근 기사(복귀)를 따른다
+  const later = new Date(Date.now() + 1000).toISOString();
+  const sig = teamNewsSignal([{ date: now, impacts: [{ teamId: 'LG', tag: 'injury', player: '김현수' }] }, { date: later, impacts: [{ teamId: 'LG', tag: 'return', player: '김현수' }] }], 'LG');
+  assert.deepEqual({ neg: sig.neg, pos: sig.pos }, { neg: 0, pos: 1 });
+});
+
+test('R3: 결장 경기 수는 처음 본 시각(또는 ESPN 업데이트 시각) 이후 팀 경기로 계산', async () => {
+  const { annotateInjuries } = await import('../src/injury-tracker.js');
+  const day = 86400e3;
+  const now = Date.now();
+  const history = Array.from({ length: 10 }, (_, i) => ({ status: 'final', date: new Date(now - (10 - i) * day).toISOString(), home: { id: 'T' }, away: { id: 'X' } }));
+  const [fresh, old] = annotateInjuries('test-r3', [
+    { teamId: 'T', player: 'New Guy', status: 'Out', date: new Date(now).toISOString() },
+    { teamId: 'T', player: 'Old Guy', status: 'Out', date: new Date(now - 5.5 * day).toISOString() },
+  ], history, now);
+  assert.equal(fresh.gamesMissed, 0);
+  assert.equal(old.gamesMissed, 5);
+});
+
+test('R5: AI 하루 한도는 저장되어 다른 프로세스(재시작)에서도 유지된다', async () => {
+  const { reserveCall } = await import('../src/limits.js');
+  reserveCall('r5-test', 1);
+  assert.throws(() => reserveCall('r5-test', 1), /한도/);
+  const code = await new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', "import('./src/limits.js').then(m=>{try{m.reserveCall('r5-test',1);process.exit(0)}catch{process.exit(3)}})"], { cwd: ROOT, env: process.env });
+    child.on('exit', resolve);
+  });
+  assert.equal(code, 3, '새 프로세스에서도 한도 초과');
+});
+
+function mockTagClient(T, { gate, text } = {}) {
+  const calls = [];
+  T._setClientForTest({
+    beta: {
+      messages: {
+        create: async (req) => {
+          calls.push(req);
+          if (gate) await gate;
+          const ids = [...req.messages[0].content.matchAll(/"id": "(a\d+)"/g)].map((m) => m[1]);
+          return {
+            model: 'claude-haiku-5-5',
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 1000, output_tokens: 100 },
+            content: [{ type: 'text', text: text ?? JSON.stringify({ articles: ids.map((id) => ({ id, events: [] })) }) }],
+          };
+        },
+      },
+    },
+  });
+  return calls;
+}
+
+test('R6: 진행 중인 기사 분류는 다른 요청이 기다렸다가 결과를 받는다 (중복 호출 없음)', async () => {
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const T = await import('../src/ai-tagger.js');
+  let release;
+  const calls = mockTagClient(T, { gate: new Promise((r) => (release = r)) });
+  const league = { id: 'test-r6', name: 'r6' };
+  const teams = [{ id: 'A', name: 'A', aliases: ['A'] }];
+  const art = { title: 'R6 기사', summary: '', date: new Date().toISOString() };
+  const first = T.tagArticles(league, teams, [art]);
+  await new Promise((r) => setTimeout(r, 20));
+  const second = T.tagArticles(league, teams, [art]);
+  await new Promise((r) => setTimeout(r, 20));
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(calls.length, 1, 'API는 한 번만');
+  assert.equal(a.tagged, 1);
+  assert.equal(b.waited, 1, '두 번째는 기다려서 받음');
+  assert.equal(b.cost.calls, 0, '비용은 실제 호출한 쪽에만');
+  assert.ok(T.cachedTags('test-r6', art));
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
+test('R7: 분류 응답 형식이 틀려도 그 호출 비용은 단계별 비용에 포함된다', async () => {
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const T = await import('../src/ai-tagger.js');
+  mockTagClient(T, { text: 'not-json' });
+  const r = await T.tagArticles({ id: 'test-r7', name: 'r7' }, [{ id: 'A', name: 'A' }], [{ title: 'R7 기사', summary: '', date: new Date().toISOString() }]);
+  assert.ok(r.error);
+  assert.equal(r.cost.calls, 1);
+  assert.ok(Math.abs(r.cost.usd - 0.00015) < 1e-12);
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
+test('R8: 캐시 청소는 네트워크 캐시 파일만 지운다 (비용 기록 등은 보존)', async () => {
+  const { sweepDisk } = await import('../src/http.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-sweep-'));
+  const old = Date.now() / 1000 - 20 * 86400;
+  const files = { cache: `${'a'.repeat(40)}.json`, usage: 'ai-usage.json', tags: 'ai-tags-epl.json', other: 'notes.txt' };
+  for (const f of Object.values(files)) {
+    fs.writeFileSync(path.join(dir, f), '{}');
+    fs.utimesSync(path.join(dir, f), old, old);
+  }
+  sweepDisk(dir);
+  assert.equal(fs.existsSync(path.join(dir, files.cache)), false, '오래된 캐시는 삭제');
+  for (const k of ['usage', 'tags', 'other']) assert.ok(fs.existsSync(path.join(dir, files[k])), `${files[k]} 보존`);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

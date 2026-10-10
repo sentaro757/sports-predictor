@@ -268,12 +268,24 @@ function teamColumn(side, structured) {
     <div class="section"><h3>팀 뉴스</h3>${miniList(side.news, linkLi, '최근 기사 없음')}</div></div>`;
 }
 
-async function openGame(gameId, aiResult = null) {
+/*
+ * 상세 창(모달) 세대 번호. 창을 새로 열거나 닫을 때마다 올라간다.
+ * 응답이 늦게 도착했을 때 요청 시점의 세대와 다르면 그 응답은 버린다
+ * (A 경기 AI 분석 중에 B 경기를 열었는데 A 결과가 B 화면에 붙는 문제 방지).
+ */
+let modalSeq = 0;
+const isCurrentModal = (seq) => seq === modalSeq && $('#detail').open;
+
+async function openGame(gameId, aiResult = null, leagueId = state.league, seq = null) {
   const dlg = $('#detail');
-  if (!aiResult) $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
+  if (seq === null) {
+    seq = ++modalSeq;
+    $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
+  }
   if (!dlg.open) dlg.showModal();
   try {
-    const d = await api(`/api/game/${state.league}/${gameId}`);
+    const d = await api(`/api/game/${leagueId}/${gameId}`);
+    if (!isCurrentModal(seq)) return;
     const p = d.prediction;
     const soccer = d.league.sport === 'soccer';
     const g = d.game;
@@ -304,9 +316,9 @@ async function openGame(gameId, aiResult = null) {
       $('#ai-section').innerHTML = aiResultHtml(aiResult, g);
       $('#ai-section').insertAdjacentHTML('afterbegin', '<p class="note">AI 기사 분류 결과를 반영해 아래 예측 근거와 팀별 기사도 다시 계산했습니다.</p>');
     }
-    $('#ai-run')?.addEventListener('click', () => runAi(gameId, g));
+    $('#ai-run')?.addEventListener('click', () => runAi(gameId, g, leagueId, seq));
   } catch (e) {
-    $('#detail-body').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
+    if (isCurrentModal(seq)) $('#detail-body').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
   }
 }
 
@@ -341,7 +353,11 @@ function usageTable(period) {
 }
 
 async function openUsage() {
+  const seq = ++modalSeq;
+  $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
+  if (!$('#detail').open) $('#detail').showModal();
   await loadUsage();
+  if (!isCurrentModal(seq)) return;
   const u = state.usage;
   const c = state.ai;
   $('#detail-body').innerHTML = u
@@ -358,7 +374,6 @@ async function openUsage() {
         <li>AI 기사 분류: ${c.tagging?.enabled ? `${esc(c.tagging.model)} — AI 분석 버튼을 누를 때 그 경기 두 팀 기사만 먼저 분류` : c.enabled ? '꺼짐 (AI_TAG_ARTICLES=0)' : '꺼짐 (ANTHROPIC_API_KEY 없음)'}</li>
       </ul></div>`
     : '<div class="empty error">사용량을 불러오지 못했습니다.</div>';
-  $('#detail').showModal();
 }
 
 function aiSection() {
@@ -378,13 +393,14 @@ const costLine = (label, c, model) =>
   `<div class="kv"><span>${label} <span class="muted small">${esc(model || '')}${c.calls ? ` · ${c.calls}회 · 입력 ${c.inputTokens.toLocaleString()} / 출력 ${c.outputTokens.toLocaleString()} 토큰` : ''}</span></span><span>${c.unpriced ? '가격 미등록 ' : ''}${usd(c.usd)}</span></div>`;
 
 function aiResultHtml(r, g) {
-  const soccer = state.data.league.sport === 'soccer';
+  // 지금 보고 있는 리그가 아니라 그 경기의 리그 기준 (무승부 표시 여부)
+  const soccer = state.catalog.find((s) => s.leagues.some((l) => l.id === g.league))?.id === 'soccer';
   const name = (s) => esc(s === 'home' ? g.home.name : g.away.name);
   const factors = (r.factors || []).filter((f) => f && (f.team === 'home' || f.team === 'away'));
   const srcLinks = (f) =>
     (f.sources || []).length
       ? ` <span class="muted small">— 근거: ${f.sources.map((x) => (x.url ? `<a href="${safeUrl(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title))).join(', ')}</span>`
-      : '';
+      : ' <span class="muted small">(근거 기사 미지정 — 참고만)</span>';
   const t = r.steps?.tagging;
   const tagNote = t?.enabled
     ? `기사 분류: 새로 ${t.tagged || 0}건${t.skipped ? `, 이미 분류된 ${t.skipped}건` : ''}${t.error ? ` (실패: ${esc(t.error)} — 규칙 기반 판단으로 분석)` : ''}`
@@ -407,21 +423,22 @@ function aiResultHtml(r, g) {
     </div>`;
 }
 
-async function runAi(gameId, g) {
+// 요청할 때의 리그·경기·창 세대를 고정해 두고, 응답이 왔을 때 모두 그대로일 때만 화면에 붙인다
+async function runAi(gameId, g, leagueId, seq) {
   const btn = $('#ai-run');
   btn.disabled = true;
   btn.textContent = state.ai.tagging?.enabled ? '① 기사 분류 → ② 분석 중… (30초~1분)' : '분석 중… (30초 정도 걸릴 수 있어요)';
   try {
-    const r = await api(`/api/ai/${state.league}/${gameId}`, { method: 'POST' });
+    const r = await api(`/api/ai/${leagueId}/${gameId}`, { method: 'POST' });
     loadUsage();
-    // 기사 분류가 바뀌었으면 통계 예측·팀별 기사도 바뀌므로 상세 화면과 목록을 다시 그린다
-    if (r.steps?.tagging?.tagged) {
-      await openGame(gameId, r);
-      refreshLeagueQuietly();
-    } else {
-      $('#ai-section').innerHTML = aiResultHtml(r, g);
-    }
+    // 기사 분류가 바뀌었으면 목록 승률도 바뀌므로 갱신 (현재 보고 있는 리그일 때만)
+    const changed = r.steps?.tagging?.tagged || r.steps?.tagging?.waited;
+    if (changed && state.league === leagueId) refreshLeagueQuietly();
+    if (!isCurrentModal(seq)) return; // 창을 닫았거나 다른 경기를 열었으면 버린다
+    if (changed) await openGame(gameId, r, leagueId, seq); // 예측 근거·팀별 기사도 다시 계산된 값으로
+    else $('#ai-section').innerHTML = aiResultHtml(r, g);
   } catch (e) {
+    if (!isCurrentModal(seq)) return;
     btn.disabled = false;
     btn.textContent = 'AI 분석 다시 시도';
     btn.insertAdjacentHTML('afterend', `<p class="error small">${esc(e.message)}</p>`);
@@ -439,6 +456,7 @@ document.addEventListener('click', (e) => {
 });
 $('#refresh').addEventListener('click', () => loadLeague(true));
 $('#detail').addEventListener('click', (e) => e.target === e.currentTarget && e.currentTarget.close());
+$('#detail').addEventListener('close', () => modalSeq++); // 닫힌 창에 도착하는 늦은 응답은 버린다
 
 (async function init() {
   const c = await api('/api/catalog');
