@@ -189,3 +189,4 @@ td.num, th.num { text-align: right; }
   .vs .nm { font-size: 16px; }
   .big-prob { font-size: 24px; }
 }
+.qr-label { font-size: 13px; margin-bottom: 8px; color: #333; }

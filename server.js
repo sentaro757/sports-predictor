@@ -32,13 +32,21 @@ function loadAccessToken() {
 const ACCESS_TOKEN = loadAccessToken();
 
 /** 이 PC의 공유기 내부 주소 (가상 네트워크 어댑터 제외) */
+// Tailscale(개인 VPN) 주소는 100.64.0.0/10 — 폰이 모바일 데이터여도 접속 가능
+const isTailscale = (name, address) => /tailscale/i.test(name) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address);
+
 function lanAddresses() {
   const out = [];
   for (const [name, list] of Object.entries(os.networkInterfaces())) {
     if (/vEthernet|WSL|VirtualBox|VMware|Hyper-V|Docker|Loopback/i.test(name)) continue;
-    for (const a of list || []) if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')) out.push({ name, address: a.address });
+    for (const a of list || []) {
+      if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')) {
+        out.push({ name, address: a.address, kind: isTailscale(name, a.address) ? 'tailscale' : 'lan' });
+      }
+    }
   }
-  return out;
+  // Tailscale 주소를 먼저 (와이파이·데이터 어디서나 되므로)
+  return out.sort((a, b) => (a.kind === 'tailscale' ? -1 : 0) - (b.kind === 'tailscale' ? -1 : 0));
 }
 
 const isLocalClient = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
@@ -73,9 +81,9 @@ async function phoneInfo(req) {
   return {
     enabled: true,
     addresses: await Promise.all(
-      addrs.map(async ({ name, address }) => {
+      addrs.map(async ({ name, address, kind }) => {
         const url = `http://${address}:${PORT}/?token=${encodeURIComponent(ACCESS_TOKEN)}`;
-        return { name, address, url, svg: await QRCode.toString(url, { type: 'svg', margin: 1, width: 220 }) };
+        return { name, address, kind, url, svg: await QRCode.toString(url, { type: 'svg', margin: 1, width: 220 }) };
       }),
     ),
   };

@@ -487,21 +487,34 @@ async function openPhone() {
       <p class="note">폰과 PC가 같은 공유기(와이파이)에 연결돼 있어야 합니다. 처음 켤 때 Windows 방화벽 창이 뜨면 "허용"을 눌러 주세요.</p>`;
     return;
   }
+  const hasTailscale = info.addresses.some((a) => a.kind === 'tailscale');
   const list = info.addresses.length
     ? info.addresses
         .map(
-          (a) => `<div class="card box qr-box">${a.svg}<div class="small muted">${esc(a.name)} · ${esc(a.address)}</div></div>`,
+          (a) => `<div class="card box qr-box">
+            <div class="qr-label">${a.kind === 'tailscale' ? '<b>Tailscale</b> — 와이파이·데이터 어디서나' : '<b>같은 와이파이</b>에서만'}</div>
+            ${a.svg}<div class="small muted">${esc(a.name)} · ${esc(a.address)}</div></div>`,
         )
         .join('')
-    : '<p class="error">이 PC의 공유기 내부 주소를 찾지 못했습니다. 네트워크 연결을 확인하세요.</p>';
+    : '<p class="error">이 PC의 네트워크 주소를 찾지 못했습니다. 네트워크 연결을 확인하세요.</p>';
+  const tailscaleHelp = hasTailscale
+    ? ''
+    : `<div class="card box"><b>모바일 데이터로 보려면</b> (Tailscale, 무료 개인 VPN)
+        <ol class="steps small">
+          <li>이 PC에 Tailscale 설치·로그인: <a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a></li>
+          <li>폰에 Tailscale 앱 설치 → <b>같은 계정</b>으로 로그인 → 연결 켜기</li>
+          <li>이 창을 다시 열면 "Tailscale" QR 코드가 추가로 나옵니다</li>
+        </ol>
+        <p class="note">인터넷에 공개되지 않고 내 PC와 내 폰끼리만 연결됩니다. PC가 켜져 있고 이 서버가 실행 중이어야 합니다.</p></div>`;
   $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰으로 보기</h2>
     <ol class="steps">
-      <li>폰을 PC와 <b>같은 공유기의 와이파이</b>에 연결하세요.</li>
+      <li>폰을 PC와 <b>같은 와이파이</b>에 연결하거나, 모바일 데이터라면 <b>Tailscale</b>을 켜세요 (아래 안내).</li>
       <li>폰 카메라로 아래 QR 코드를 찍고 뜨는 주소를 여세요.</li>
       <li>한 번 열면 폰 브라우저가 기억하므로, 열린 화면을 <b>북마크</b>하거나 <b>홈 화면에 추가</b>해 두면 다음부터 바로 열립니다.</li>
     </ol>
     <div class="qr-list">${list}</div>
-    <p class="note">QR 코드에는 이 PC 전용 접속 토큰이 들어 있습니다. 다른 사람에게 보여주지 마세요. 폰에서 안 열리면 ① 폰이 같은 와이파이인지(모바일 데이터 X) ② Windows 방화벽에서 Node.js 가 허용돼 있는지 확인하세요.</p>`;
+    ${tailscaleHelp}
+    <p class="note">QR 코드에는 이 PC 전용 접속 토큰이 들어 있습니다. 다른 사람에게 보여주지 마세요. 폰에서 안 열리면 ① 같은 와이파이 QR은 폰이 같은 와이파이일 때만, Tailscale QR은 폰의 Tailscale 연결이 켜져 있을 때만 열립니다 ② Windows 방화벽에서 Node.js 가 허용돼 있는지 확인하세요(Tailscale 네트워크가 "개인"으로 잡히면 개인 네트워크 허용도 필요할 수 있음).</p>`;
 }
 
 (async function init() {
