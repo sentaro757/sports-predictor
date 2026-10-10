@@ -1,6 +1,6 @@
 import { LEAGUES, SPORTS, UPCOMING_DAYS, leagueById } from './config.js';
-import { memo, clearMemo } from './http.js';
-import { cachedTags, scheduleTagging, taggerEnabled } from './ai-tagger.js';
+import { memo } from './http.js';
+import { cachedTags, taggerEnabled } from './ai-tagger.js';
 import { buildRatings, predictGame } from './model.js';
 import { attribute, buildRosterIndex, teamNewsSignal } from './signals.js';
 import * as naver from './sources/naver.js';
@@ -75,10 +75,9 @@ export function leagueData(leagueId) {
       };
     });
     articles.sort(byDateDesc);
-    const tagging = { enabled: taggerEnabled(), ai: articles.filter((a) => a.by === 'ai').length, rule: 0, queued: 0 };
-    tagging.rule = articles.length - tagging.ai;
-    // 분류 안 된 최근 기사는 백그라운드로 AI 분류 → 끝나면 이 리그 캐시를 비워 다음 요청에 반영
-    tagging.queued = scheduleTagging(league, teams, articles.filter((a) => a.by === 'rule'), () => clearMemo(`league:${leagueId}`));
+    // AI 기사 분류는 자동으로 하지 않는다 (경기 상세의 AI 분석 버튼을 누를 때만, src/ai.js)
+    const aiCount = articles.filter((a) => a.by === 'ai').length;
+    const tagging = { enabled: taggerEnabled(), ai: aiCount, rule: articles.length - aiCount };
 
     const model = buildRatings(history, league.sport);
     // 현재 시즌에 뛰는 팀 (강등팀은 순위표에서 제외)

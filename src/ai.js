@@ -1,7 +1,9 @@
 // (선택) Claude로 뉴스·부상·이적 기사를 읽고 통계 예측을 보정한다. ANTHROPIC_API_KEY 가 있어야 동작
-import { AI_MODEL, AI_DAILY_LIMIT, AI_MAX_CONCURRENT, AI_MAX_SHIFT, fallbackParams } from './config.js';
-import { gameDetail } from './service.js';
+import { AI_MODEL, AI_TAG_MODEL, AI_DAILY_LIMIT, AI_MAX_CONCURRENT, AI_MAX_SHIFT, fallbackParams } from './config.js';
+import { gameDetail, leagueData } from './service.js';
 import { recordUsage } from './usage.js';
+import { clearMemo } from './http.js';
+import { tagArticles, taggerEnabled } from './ai-tagger.js';
 
 const CACHE_TTL = 3 * 3600e3; // 같은 경기는 3시간 동안 다시 분석하지 않는다 (비용 절감)
 const MAX_ATTEMPTS = 2; // 형식이 잘못된 응답이면 한 번 더 시도
@@ -21,12 +23,20 @@ const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10
 const usage = { day: kstDay(), calls: 0 };
 let running = 0;
 
-function takeCall() {
+function checkCallAvailable() {
   if (usage.day !== kstDay()) Object.assign(usage, { day: kstDay(), calls: 0 });
   if (usage.calls >= AI_DAILY_LIMIT) {
     throw Object.assign(new Error(`오늘 AI 분석 한도(${AI_DAILY_LIMIT}회)를 다 썼습니다. AI_DAILY_LIMIT 으로 조정할 수 있습니다`), { status: 429 });
   }
+}
+
+function takeCall() {
+  checkCallAvailable();
   usage.calls++;
+}
+
+export function _setClientForTest(c) {
+  client = c;
 }
 
 export const aiUsage = () => ({ day: usage.day, calls: usage.calls, limit: AI_DAILY_LIMIT });
@@ -148,7 +158,25 @@ export function parseAndValidate(text, { draws, sources, statProbs }) {
 const cache = new Map(); // key -> { at, value }
 const inflight = new Map();
 
+/**
+ * 1단계: 이 경기 두 팀의 최근 기사 중 아직 분류 안 한 것을 Haiku 로 분류 (누가 다쳤는지/복귀했는지 정확히 나눔)
+ *        → 분류가 바뀌었으면 리그 캐시를 비워 통계 예측과 팀별 기사 목록을 다시 계산
+ */
+async function tagStep(leagueId, gameId) {
+  if (!taggerEnabled()) return { enabled: false };
+  const data = await leagueData(leagueId);
+  const game = data.upcoming.find((g) => g.id === gameId);
+  if (!game) return { enabled: true, tagged: 0, skipped: 0, cost: null };
+  const ids = new Set([game.home.id, game.away.id]);
+  const related = data.articles.filter((a) => a.teamIds.some((id) => ids.has(id)));
+  const r = await tagArticles(data.league, data.teams, related);
+  if (r.tagged) clearMemo(`league:${leagueId}`);
+  return { enabled: true, model: AI_TAG_MODEL, ...r };
+}
+
 async function runAnalysis(leagueId, gameId) {
+  checkCallAvailable(); // 한도를 넘었으면 기사 분류 비용도 쓰지 않는다
+  const tagging = await tagStep(leagueId, gameId);
   const detail = await gameDetail(leagueId, gameId);
   const req = buildRequest(detail);
   const anthropic = await getClient();
@@ -180,7 +208,7 @@ async function runAnalysis(leagueId, gameId) {
     if (response.stop_reason === 'refusal') throw Object.assign(new Error('AI가 이 요청에 대한 분석을 거절했습니다'), { status: 502 });
     const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
     try {
-      return { ...parseAndValidate(text, req), model: response.model, at: new Date().toISOString(), fallback: false, cost };
+      return { ...parseAndValidate(text, req), model: response.model, at: new Date().toISOString(), fallback: false, ...costReport(cost, tagging) };
     } catch (e) {
       if (!(e instanceof InvalidOutput)) throw e;
       lastError = e.message;
@@ -196,7 +224,23 @@ async function runAnalysis(leagueId, gameId) {
     model: AI_MODEL,
     at: new Date().toISOString(),
     fallback: true,
-    cost,
+    ...costReport(cost, tagging),
+  };
+}
+
+/** 결과에 붙일 비용: 단계별(기사 분류 / 분석)과 합계 */
+function costReport(analysis, tagging) {
+  const t = tagging.cost || { usd: 0, krw: 0, calls: 0, inputTokens: 0, outputTokens: 0, unpriced: false };
+  return {
+    steps: { tagging: { ...tagging, cost: t }, analysis: { model: AI_MODEL, cost: analysis } },
+    cost: {
+      usd: analysis.usd + t.usd,
+      krw: analysis.krw + t.krw,
+      calls: analysis.calls + t.calls,
+      inputTokens: analysis.inputTokens + t.inputTokens,
+      outputTokens: analysis.outputTokens + t.outputTokens,
+      unpriced: analysis.unpriced || t.unpriced,
+    },
   };
 }
 

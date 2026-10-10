@@ -1,7 +1,7 @@
-// (선택) Claude로 기사마다 "어느 팀의 어떤 일인지"를 분류한다. 규칙 기반 판단(signals.js)보다 우선 적용.
-// 켜는 법: ANTHROPIC_API_KEY + AI_TAG_ARTICLES=1
+// Claude(기본 Haiku)로 기사마다 "어느 팀의 어떤 일인지"를 분류한다. 규칙 기반 판단(signals.js)보다 우선 적용.
+//  - 자동으로 돌지 않는다. 경기 상세의 "AI 분석 실행"을 누르면 그 경기 두 팀의 최근 기사만 먼저 분류한다 (src/ai.js)
 //  - 새 기사만 묶어서(최대 30건) 분류하고, 결과는 data/cache/ai-tags-<리그>.json 에 저장해 다시 분류하지 않는다
-//  - 화면을 기다리게 하지 않도록 백그라운드에서 실행하고, 끝나면 리그 캐시를 비워 다음 요청부터 반영한다
+//    (저장된 분류는 같은 팀의 다른 경기 예측에도 반영된다)
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -15,7 +15,8 @@ const BATCH = 30;
 const MAX_AGE_MS = 3 * 86400e3; // 예측에 쓰는 기간(3일) 기사만 분류
 const TYPES = new Set(['injury', 'return', 'coach', 'transfer', 'release']);
 
-export const taggerEnabled = () => aiEnabled() && process.env.AI_TAG_ARTICLES === '1';
+// AI 분석 버튼을 누를 때 함께 실행. 기사 분류 없이 분석만 하려면 AI_TAG_ARTICLES=0
+export const taggerEnabled = () => aiEnabled() && process.env.AI_TAG_ARTICLES !== '0';
 
 let client = null;
 async function getClient() {
@@ -129,7 +130,7 @@ async function runBatch(league, teams, batch) {
     system: SYSTEM,
     messages: [{ role: 'user', content: buildPrompt(league, teams, batch) }],
   });
-  recordUsage('tagging', response);
+  const cost = recordUsage('tagging', response);
   if (response.stop_reason === 'refusal') throw new Error('AI가 분류를 거절했습니다');
   const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
   const idMap = new Map(batch.map(({ id, key }) => [id, key]));
@@ -140,38 +141,55 @@ async function runBatch(league, teams, batch) {
     if (result.has(key)) m.set(key, { events: result.get(key), at: Date.now(), model: response.model });
   }
   await save(league.id);
-  return result.size;
+  return { count: result.size, cost };
 }
 
 /**
- * 아직 분류하지 않은 최근 기사를 백그라운드로 분류한다. 끝나면 onDone() 호출.
+ * 아직 분류하지 않은 최근 기사를 지금 분류한다 (AI 분석 버튼을 눌렀을 때 그 경기 두 팀의 기사만).
+ * 결과: { tagged: 분류한 기사 수, skipped: 이미 분류돼 있던 수, cost: { usd, krw, calls, inputTokens, outputTokens }, error }
  */
-export function scheduleTagging(league, teams, articles, onDone) {
-  if (!taggerEnabled()) return 0;
+export async function tagArticles(league, teams, articles) {
+  const empty = { tagged: 0, skipped: 0, cost: { usd: 0, krw: 0, calls: 0, inputTokens: 0, outputTokens: 0, unpriced: false }, error: null };
+  if (!taggerEnabled()) return empty;
   const cutoff = Date.now() - MAX_AGE_MS;
   const m = store(league.id);
   const todo = [];
+  const seen = new Set();
   for (const a of articles) {
-    if (!a.title || (a.date && Date.parse(a.date) < cutoff) || !a.teamIds?.length) continue;
+    if (!a.title || (a.date && Date.parse(a.date) < cutoff)) continue;
     const key = articleKey(a);
-    if (m.has(key) || pending.has(key)) continue;
-    pending.add(key);
-    todo.push({ key, a });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (m.has(key)) empty.skipped++;
+    else if (!pending.has(key)) todo.push({ key, a });
   }
-  if (!todo.length) return 0;
-  chain = chain.then(async () => {
-    let done = 0;
-    for (let i = 0; i < todo.length; i += BATCH) {
-      const batch = todo.slice(i, i + BATCH).map((x, j) => ({ ...x, id: `a${j + 1}` }));
-      try {
-        done += await runBatch(league, teams, batch);
-      } catch (e) {
-        console.warn(`[ai-tag] ${league.name} 분류 실패: ${e.message}`);
-        break;
+  if (!todo.length) return empty;
+  for (const { key } of todo) pending.add(key);
+  // 같은 리그 파일에 동시에 쓰지 않도록 분류 작업은 한 번에 하나씩
+  const run = chain.then(async () => {
+    const out = { ...empty, cost: { ...empty.cost } };
+    try {
+      for (let i = 0; i < todo.length; i += BATCH) {
+        const batch = todo.slice(i, i + BATCH).map((x, j) => ({ ...x, id: `a${j + 1}` }));
+        const r = await runBatch(league, teams, batch);
+        out.tagged += r.count;
+        out.cost.calls++;
+        out.cost.inputTokens += r.cost.inputTokens;
+        out.cost.outputTokens += r.cost.outputTokens;
+        if (r.cost.costUsd == null) out.cost.unpriced = true;
+        else {
+          out.cost.usd += r.cost.costUsd;
+          out.cost.krw += r.cost.costKrw;
+        }
       }
+    } catch (e) {
+      console.warn(`[ai-tag] ${league.name} 분류 실패: ${e.message}`);
+      out.error = e.message;
+    } finally {
+      for (const { key } of todo) pending.delete(key);
     }
-    for (const { key } of todo) pending.delete(key);
-    if (done) onDone?.();
+    return out;
   });
-  return todo.length;
+  chain = run.catch(() => {});
+  return run;
 }

@@ -107,9 +107,7 @@ async function loadLeague(refresh = false) {
       ? `<br><span class="warn-text">⚠ ${data.warnings.map(esc).join(' · ')}</span>`
       : '';
     const tg = data.tagging;
-    const tagInfo = tg?.enabled
-      ? ` · 기사 분석: AI ${tg.ai}건 / 규칙 ${tg.rule}건${tg.queued ? ` (AI 분류 진행 중 ${tg.queued}건 — 잠시 후 새로고침)` : ''}`
-      : '';
+    const tagInfo = tg?.enabled && tg.ai ? ` · 기사 판단: AI ${tg.ai}건 / 규칙 ${tg.rule}건` : '';
     $('#league-meta').innerHTML = `분석 경기 ${data.gamesUsed.toLocaleString()}개${bt} · ${fmtTime(data.updatedAt)} 업데이트${tagInfo}${warn}`;
     renderContent();
     if (state.ai.tagging?.enabled) loadUsage(); // 기사 분류가 백그라운드로 돌았을 수 있음
@@ -117,6 +115,18 @@ async function loadLeague(refresh = false) {
     $('#league-title').textContent = '오류';
     $('#content').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
   }
+}
+
+/** 로딩 화면 없이 리그 데이터만 다시 받아 목록을 갱신 (AI 기사 분류 뒤) */
+async function refreshLeagueQuietly() {
+  const id = state.league;
+  try {
+    const data = await api(`/api/league/${id}`);
+    if (state.league === id) {
+      state.data = data;
+      renderContent();
+    }
+  } catch {}
 }
 
 /* ---------- 탭 콘텐츠 ---------- */
@@ -258,10 +268,10 @@ function teamColumn(side, structured) {
     <div class="section"><h3>팀 뉴스</h3>${miniList(side.news, linkLi, '최근 기사 없음')}</div></div>`;
 }
 
-async function openGame(gameId) {
+async function openGame(gameId, aiResult = null) {
   const dlg = $('#detail');
-  $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
-  dlg.showModal();
+  if (!aiResult) $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
+  if (!dlg.open) dlg.showModal();
   try {
     const d = await api(`/api/game/${state.league}/${gameId}`);
     const p = d.prediction;
@@ -290,6 +300,10 @@ async function openGame(gameId) {
       )}</div>
 
       <div class="section"><div class="cols">${teamColumn(d.away, d.injuriesStructured)}${teamColumn(d.home, d.injuriesStructured)}</div></div>`;
+    if (aiResult) {
+      $('#ai-section').innerHTML = aiResultHtml(aiResult, g);
+      $('#ai-section').insertAdjacentHTML('afterbegin', '<p class="note">AI 기사 분류 결과를 반영해 아래 예측 근거와 팀별 기사도 다시 계산했습니다.</p>');
+    }
     $('#ai-run')?.addEventListener('click', () => runAi(gameId, g));
   } catch (e) {
     $('#detail-body').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
@@ -308,7 +322,7 @@ async function loadUsage() {
     u = await api('/api/usage');
   } catch {}
   state.usage = u;
-  const mode = c.enabled ? `AI 사용 가능${c.tagging?.enabled ? ' · 기사 분류 켜짐' : ''}` : '통계모델 모드 (AI 꺼짐)';
+  const mode = c.enabled ? 'AI 분석 사용 가능' : '통계모델 모드 (AI 꺼짐)';
   const cost = u ? ` · 비용 오늘 ${usd(u.today.cost)} / 이번 달 ${usd(u.month.cost)}` : '';
   $('#ai-status').innerHTML = `<button type="button" class="linklike" id="usage-open" title="AI 사용량과 비용 자세히 보기"><span class="dot"></span>${mode}${cost}</button>`;
   $('#usage-open').addEventListener('click', openUsage);
@@ -341,7 +355,7 @@ async function openUsage() {
       <div class="section"><h3>이번 달 상세</h3>${usageTable(u.month)}</div>
       <div class="section"><h3>현재 설정</h3><ul class="mini">
         <li>AI 분석 버튼: ${c.enabled ? esc(c.model) : '꺼짐 (ANTHROPIC_API_KEY 없음)'}</li>
-        <li>AI 기사 분류: ${c.tagging?.enabled ? esc(c.tagging.model) : '꺼짐 (AI_TAG_ARTICLES=1 로 켬)'}</li>
+        <li>AI 기사 분류: ${c.tagging?.enabled ? `${esc(c.tagging.model)} — AI 분석 버튼을 누를 때 그 경기 두 팀 기사만 먼저 분류` : c.enabled ? '꺼짐 (AI_TAG_ARTICLES=0)' : '꺼짐 (ANTHROPIC_API_KEY 없음)'}</li>
       </ul></div>`
     : '<div class="empty error">사용량을 불러오지 못했습니다.</div>';
   $('#detail').showModal();
@@ -352,32 +366,61 @@ function aiSection() {
     return `<div class="card ai-box"><b>AI 뉴스 분석 (꺼짐)</b>
       <p class="muted small">ANTHROPIC_API_KEY 를 설정하고 서버를 다시 시작하면, Claude가 기사 내용을 읽고 확률을 보정하며 이유를 설명합니다.</p></div>`;
   }
+  const tag = state.ai.tagging?.enabled
+    ? `① ${esc(state.ai.tagging.model)}가 두 팀의 최근 기사를 먼저 분류하고(누가 다쳤는지·복귀했는지) ② ${esc(state.ai.model)}가 그 자료로 통계 예측을 보정합니다.`
+    : `${esc(state.ai.model)}가 부상·이적·팀 기사 내용을 읽고 통계 예측을 보정합니다.`;
   return `<div class="card ai-box"><b>AI 뉴스 분석</b>
-    <p class="muted small">Claude(${esc(state.ai.model)})가 부상·이적·팀 기사 내용을 읽고 통계 예측을 보정합니다. 분석 1회당 API 요금이 발생합니다(실제 금액은 분석 후 표시).</p>
+    <p class="muted small">${tag} 누를 때마다 API 요금이 발생합니다(실제 금액은 분석 후 표시).</p>
     <button id="ai-run" class="btn" type="button">AI 분석 실행</button></div>`;
+}
+
+const costLine = (label, c, model) =>
+  `<div class="kv"><span>${label} <span class="muted small">${esc(model || '')}${c.calls ? ` · ${c.calls}회 · 입력 ${c.inputTokens.toLocaleString()} / 출력 ${c.outputTokens.toLocaleString()} 토큰` : ''}</span></span><span>${c.unpriced ? '가격 미등록 ' : ''}${usd(c.usd)}</span></div>`;
+
+function aiResultHtml(r, g) {
+  const soccer = state.data.league.sport === 'soccer';
+  const name = (s) => esc(s === 'home' ? g.home.name : g.away.name);
+  const factors = (r.factors || []).filter((f) => f && (f.team === 'home' || f.team === 'away'));
+  const srcLinks = (f) =>
+    (f.sources || []).length
+      ? ` <span class="muted small">— 근거: ${f.sources.map((x) => (x.url ? `<a href="${safeUrl(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title))).join(', ')}</span>`
+      : '';
+  const t = r.steps?.tagging;
+  const tagNote = t?.enabled
+    ? `기사 분류: 새로 ${t.tagged || 0}건${t.skipped ? `, 이미 분류된 ${t.skipped}건` : ''}${t.error ? ` (실패: ${esc(t.error)} — 규칙 기반 판단으로 분석)` : ''}`
+    : '';
+  const cost = r.cached
+    ? '<p class="note">3시간 안에 분석한 같은 경기라 저장된 결과를 보여줍니다 — 이번에는 추가 비용 없음</p>'
+    : r.cost
+      ? `<div class="section"><h3>이번 분석 비용</h3>
+        ${t?.enabled ? costLine('① 기사 분류', t.cost, t.model) : ''}
+        ${costLine(t?.enabled ? '② 분석' : '분석', r.steps?.analysis?.cost || r.cost, r.steps?.analysis?.model)}
+        <div class="kv"><b>합계</b><b>${usd(r.cost.usd)} <span class="muted small">(약 ${krw(r.cost.krw)})</span></b></div></div>`
+      : '';
+  return `<div class="card ai-box"><b>${r.fallback ? 'AI 분석 실패 — 통계모델 결과' : 'AI 분석 결과'}</b> <span class="muted small">${esc(r.model)}</span>
+      <div style="margin:10px 0">${probBar(r.probs, soccer)}</div>
+      <p>${esc(r.summary)}</p>
+      ${r.clamped ? '<p class="note">AI가 제시한 확률이 통계 예측과 너무 달라 허용 범위(±15%p) 안으로 조정했습니다.</p>' : ''}
+      ${factors.map((f) => `<div class="factor"><span class="${f.impact === '+' ? 'pos' : 'neg'}">${f.impact === '+' ? '▲' : '▼'}</span> <b>${name(f.team)}</b> ${esc(f.text)}${srcLinks(f)}</div>`).join('')}
+      ${tagNote ? `<p class="note">${tagNote}</p>` : ''}
+      ${cost}
+    </div>`;
 }
 
 async function runAi(gameId, g) {
   const btn = $('#ai-run');
   btn.disabled = true;
-  btn.textContent = '분석 중… (30초 정도 걸릴 수 있어요)';
+  btn.textContent = state.ai.tagging?.enabled ? '① 기사 분류 → ② 분석 중… (30초~1분)' : '분석 중… (30초 정도 걸릴 수 있어요)';
   try {
     const r = await api(`/api/ai/${state.league}/${gameId}`, { method: 'POST' });
     loadUsage();
-    const soccer = state.data.league.sport === 'soccer';
-    const name = (s) => esc(s === 'home' ? g.home.name : g.away.name);
-    const factors = (r.factors || []).filter((f) => f && (f.team === 'home' || f.team === 'away'));
-    const srcLinks = (f) =>
-      (f.sources || []).length
-        ? ` <span class="muted small">— 근거: ${f.sources.map((x) => (x.url ? `<a href="${safeUrl(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title))).join(', ')}</span>`
-        : '';
-    $('#ai-section').innerHTML = `<div class="card ai-box"><b>${r.fallback ? 'AI 분석 실패 — 통계모델 결과' : 'AI 분석 결과'}</b> <span class="muted small">${esc(r.model)}</span>
-      <div style="margin:10px 0">${probBar(r.probs, soccer)}</div>
-      <p>${esc(r.summary)}</p>
-      ${r.clamped ? '<p class="note">AI가 제시한 확률이 통계 예측과 너무 달라 허용 범위(±15%p) 안으로 조정했습니다.</p>' : ''}
-      ${r.cost ? `<p class="note">이번 분석 비용 ${r.cost.unpriced ? '(가격 미등록 모델) ' : ''}<b>${usd(r.cost.usd)}</b> (약 ${krw(r.cost.krw)}) · 호출 ${r.cost.calls}회 · 입력 ${r.cost.inputTokens.toLocaleString()} / 출력 ${r.cost.outputTokens.toLocaleString()} 토큰${r.cached ? ' · 3시간 내 같은 경기는 저장된 결과라 추가 비용 없음' : ''}</p>` : ''}
-      ${factors.map((f) => `<div class="factor"><span class="${f.impact === '+' ? 'pos' : 'neg'}">${f.impact === '+' ? '▲' : '▼'}</span> <b>${name(f.team)}</b> ${esc(f.text)}${srcLinks(f)}</div>`).join('')}
-    </div>`;
+    // 기사 분류가 바뀌었으면 통계 예측·팀별 기사도 바뀌므로 상세 화면과 목록을 다시 그린다
+    if (r.steps?.tagging?.tagged) {
+      await openGame(gameId, r);
+      refreshLeagueQuietly();
+    } else {
+      $('#ai-section').innerHTML = aiResultHtml(r, g);
+    }
   } catch (e) {
     btn.disabled = false;
     btn.textContent = 'AI 분석 다시 시도';
