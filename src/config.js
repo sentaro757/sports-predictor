@@ -35,9 +35,12 @@ export const MODEL = {
 
 export const UPCOMING_DAYS = 7;
 export const PORT = Number(process.env.PORT || 3000);
-// 기본은 이 PC에서만 접속 가능. 같은 네트워크의 다른 기기에서 열려면 HOST=0.0.0.0 과 ACCESS_TOKEN 을 함께 설정
-export const HOST = process.env.HOST || '127.0.0.1';
-export const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
+// 기본은 이 PC에서만 접속 가능.
+// 폰 모드(npm run phone = node server.js --phone): 같은 와이파이의 폰에서 접속 가능하게 열고, 접속 토큰을 자동으로 만든다.
+// 직접 지정하려면 HOST=0.0.0.0 과 ACCESS_TOKEN 을 설정
+export const PHONE_MODE = process.argv.includes('--phone') || process.env.PHONE === '1';
+export const HOST = process.env.HOST || (PHONE_MODE ? '0.0.0.0' : '127.0.0.1');
+export const ACCESS_TOKEN_ENV = process.env.ACCESS_TOKEN || '';
 // AI 분석 비용 안전장치: 하루 최대 호출 수, 동시에 실행할 수 있는 분석 수
 export const AI_DAILY_LIMIT = Number(process.env.AI_DAILY_LIMIT || 30);
 export const AI_MAX_CONCURRENT = 2;

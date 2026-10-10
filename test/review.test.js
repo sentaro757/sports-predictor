@@ -59,8 +59,27 @@ test('C1: 잘못된 URL 요청에도 서버가 죽지 않는다 / S10: 외부 �
   }
 });
 
-test('S10: 외부 접속(HOST=0.0.0.0)은 ACCESS_TOKEN 없이 시작하지 않는다', async () => {
-  await assert.rejects(startServer(3918, { HOST: '0.0.0.0', ACCESS_TOKEN: '' }));
+test('폰 모드: 토큰 자동 생성, 다른 기기는 토큰 필수, 이 PC는 토큰 없이, QR은 이 PC에서만', async (t) => {
+  const lan = Object.values(os.networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'));
+  if (!lan) return t.skip('공유기 내부 주소가 없는 환경');
+  const port = 3918;
+  const child = await startServer(port, { PHONE: '1', HOST: '', ACCESS_TOKEN: '' });
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(process.env.SP_STATE_DIR, 'access-token.json'), 'utf8'));
+    assert.ok(saved.token.length >= 20, '토큰이 저장됨');
+    const remote = `http://${lan.address}:${port}`;
+    assert.equal((await fetch(`${remote}/api/catalog`)).status, 401, '폰(다른 주소)에서 토큰 없으면 거부');
+    assert.equal((await fetch(`${remote}/api/catalog`, { headers: { 'x-access-token': 'wrong' } })).status, 401);
+    assert.equal((await fetch(`${remote}/api/catalog`, { headers: { 'x-access-token': saved.token } })).status, 200, '토큰 있으면 허용');
+    assert.equal((await fetch(`${remote}/api/phone`, { headers: { 'x-access-token': saved.token } })).status, 403, 'QR(토큰 포함)은 폰에 주지 않음');
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/catalog`)).status, 200, '이 PC는 토큰 없이');
+    const qr = await (await fetch(`http://127.0.0.1:${port}/api/phone`)).json();
+    assert.ok(qr.enabled && qr.addresses.some((a) => a.url.includes(saved.token) && a.svg.startsWith('<svg')));
+    const evil = await rawRequest(port, 'GET /api/catalog HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n');
+    assert.match(evil, /^HTTP\/1\.1 403/, '모르는 Host 거부 (DNS 리바인딩)');
+  } finally {
+    child.kill();
+  }
 });
 
 test('S3: 축구에서 전력이 비슷한 저득점 경기는 무승부가 가장 유력할 수 있다', () => {

@@ -1,17 +1,47 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { PORT, HOST, ACCESS_TOKEN, AI_MODEL, AI_TAG_MODEL } from './src/config.js';
+import QRCode from 'qrcode';
+import { PORT, HOST, ACCESS_TOKEN_ENV, AI_MODEL, AI_TAG_MODEL, PHONE_MODE } from './src/config.js';
 import { catalog, leagueOverview, gameDetail } from './src/service.js';
 import { analyzeGame, aiEnabled, aiUsage } from './src/ai.js';
 import { taggerEnabled } from './src/ai-tagger.js';
 import { usageSummary } from './src/usage.js';
 import { clearMemo } from './src/http.js';
+import { readJson, writeJsonSync } from './src/store.js';
 
 const PUBLIC = path.join(import.meta.dirname, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 const LOOPBACK = ['127.0.0.1', '::1', 'localhost'].includes(HOST);
+
+/**
+ * 외부(폰) 접속용 토큰. ACCESS_TOKEN 환경변수가 없으면 처음 한 번 만들어 data/state/access-token.json 에 저장
+ * (서버를 다시 켜도 같은 토큰이라 폰에 저장한 주소가 계속 동작)
+ */
+function loadAccessToken() {
+  if (ACCESS_TOKEN_ENV) return ACCESS_TOKEN_ENV;
+  if (LOOPBACK) return '';
+  const saved = readJson('access-token.json', null);
+  if (saved?.token) return saved.token;
+  const token = crypto.randomBytes(18).toString('base64url');
+  writeJsonSync('access-token.json', { token, createdAt: new Date().toISOString() });
+  return token;
+}
+const ACCESS_TOKEN = loadAccessToken();
+
+/** 이 PC의 공유기 내부 주소 (가상 네트워크 어댑터 제외) */
+function lanAddresses() {
+  const out = [];
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    if (/vEthernet|WSL|VirtualBox|VMware|Hyper-V|Docker|Loopback/i.test(name)) continue;
+    for (const a of list || []) if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')) out.push({ name, address: a.address });
+  }
+  return out;
+}
+
+const isLocalClient = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -32,7 +62,24 @@ const routes = [
   ['GET', /^\/api\/game\/([\w-]+)\/([\w-]+)$/, ([l, g]) => gameDetail(l, g)],
   ['POST', /^\/api\/ai\/([\w-]+)\/([\w-]+)$/, ([l, g]) => analyzeGame(l, g)],
   ['POST', /^\/api\/refresh\/([\w-]+)$/, ([id]) => (clearMemo(`league:${id}`), leagueOverview(id))],
+  // 폰 접속용 QR (토큰이 들어 있으므로 이 PC에서 연 화면에만 준다)
+  ['GET', /^\/api\/phone$/, (_, req) => phoneInfo(req)],
 ];
+
+async function phoneInfo(req) {
+  if (!isLocalClient(req)) throw Object.assign(new Error('이 PC에서만 볼 수 있습니다'), { status: 403 });
+  if (LOOPBACK) return { enabled: false };
+  const addrs = lanAddresses();
+  return {
+    enabled: true,
+    addresses: await Promise.all(
+      addrs.map(async ({ name, address }) => {
+        const url = `http://${address}:${PORT}/?token=${encodeURIComponent(ACCESS_TOKEN)}`;
+        return { name, address, url, svg: await QRCode.toString(url, { type: 'svg', margin: 1, width: 220 }) };
+      }),
+    ),
+  };
+}
 
 const safeEqual = (a, b) => {
   const x = Buffer.from(String(a));
@@ -43,8 +90,10 @@ const safeEqual = (a, b) => {
 /** 요청 출처 검사. 실패하면 [상태코드, 메시지] */
 function checkAccess(req) {
   const host = String(req.headers.host || '').toLowerCase();
-  // 이 PC 전용 모드에서는 Host 헤더도 localhost 여야 한다 (DNS 리바인딩 차단)
-  if (LOOPBACK && !/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host)) return [403, '허용되지 않은 호스트'];
+  const hostName = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  // Host 헤더는 localhost 또는 이 PC의 공유기 내부 주소여야 한다 (DNS 리바인딩 차단)
+  const allowedHosts = ['localhost', '127.0.0.1', '::1', ...(LOOPBACK ? [] : lanAddresses().map((a) => a.address))];
+  if (!allowedHosts.includes(hostName)) return [403, '허용되지 않은 호스트'];
   // 다른 웹사이트가 브라우저를 통해 이 서버로 POST(유료 AI 실행 등)를 보내지 못하게 한다
   const origin = req.headers.origin;
   if (req.method !== 'GET' && origin) {
@@ -54,7 +103,10 @@ function checkAccess(req) {
     } catch {}
     if (originHost !== host) return [403, '다른 사이트에서 온 요청은 허용하지 않습니다'];
   }
-  if (ACCESS_TOKEN && !safeEqual(req.headers['x-access-token'] || '', ACCESS_TOKEN)) return [401, '접속 토큰이 필요합니다'];
+  // 이 PC 자신은 토큰 없이, 다른 기기(폰)는 토큰이 있어야 한다
+  if (ACCESS_TOKEN && !isLocalClient(req) && !safeEqual(req.headers['x-access-token'] || '', ACCESS_TOKEN)) {
+    return [401, '접속 토큰이 필요합니다. PC 화면의 "폰으로 보기" QR 코드로 접속하세요'];
+  }
   return null;
 }
 
@@ -90,7 +142,7 @@ async function handle(req, res) {
     const m = url.pathname.match(re);
     if (m && req.method === method) {
       try {
-        return json(res, 200, await handler(m.slice(1)));
+        return json(res, 200, await handler(m.slice(1), req));
       } catch (e) {
         console.error(`[api] ${url.pathname}:`, e.message);
         return json(res, e.status || 500, { error: e.message });
@@ -109,12 +161,13 @@ const onRequest = (req, res) => {
 };
 
 if (!LOOPBACK && !ACCESS_TOKEN) {
-  console.error(`HOST=${HOST} 로 외부 접속을 열려면 ACCESS_TOKEN 도 설정해야 합니다.`);
+  console.error(`HOST=${HOST} 로 외부 접속을 열려면 접속 토큰이 필요합니다.`);
   process.exit(1);
 }
 
-// 이 PC 전용 모드: 브라우저가 localhost 를 IPv4(127.0.0.1) 또는 IPv6(::1) 중 어느 쪽으로 찾아도 열리도록 둘 다 연다
-const hosts = LOOPBACK ? ['127.0.0.1', '::1'] : [HOST];
+// 브라우저가 localhost 를 IPv4(127.0.0.1) 또는 IPv6(::1) 중 어느 쪽으로 찾아도 열리도록 둘 다 연다
+// (폰 모드는 0.0.0.0 = 모든 IPv4 + ::1)
+const hosts = LOOPBACK ? ['127.0.0.1', '::1'] : HOST === '0.0.0.0' ? ['0.0.0.0', '::1'] : [HOST];
 let opened = 0;
 for (const [i, host] of hosts.entries()) {
   const server = http.createServer(onRequest);
@@ -127,8 +180,16 @@ for (const [i, host] of hosts.entries()) {
   });
   server.listen(PORT, host, () => {
     if (opened++) return;
-    console.log(`승부예측 대시보드: http://${LOOPBACK ? 'localhost' : HOST}:${PORT}${ACCESS_TOKEN ? '/?token=<ACCESS_TOKEN>' : ''}`);
-    if (LOOPBACK) console.log(`  (열리지 않으면 http://127.0.0.1:${PORT})`);
+    console.log(`승부예측 대시보드: http://localhost:${PORT}`);
+    console.log(`  (열리지 않으면 http://127.0.0.1:${PORT})`);
+    if (!LOOPBACK) {
+      const lan = lanAddresses().map((a) => `http://${a.address}:${PORT}`).join(', ');
+      console.log(`폰 모드: 같은 와이파이의 폰에서 접속 가능 (${lan || '내부 주소를 찾지 못함'})`);
+      console.log('  PC에서 위 주소를 열고 오른쪽 위 "폰으로 보기"의 QR 코드를 폰 카메라로 찍으세요.');
+      console.log('  Windows 방화벽 창이 뜨면 "허용"을 눌러야 폰에서 열립니다.');
+    } else if (PHONE_MODE === false) {
+      console.log('  폰에서도 보려면: npm run phone');
+    }
     console.log(aiEnabled() ? `AI 분석 사용 가능 (${AI_MODEL})` : 'AI 분석 꺼짐 (ANTHROPIC_API_KEY 미설정) — 통계모델만 사용');
   });
 }

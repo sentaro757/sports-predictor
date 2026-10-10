@@ -23,18 +23,21 @@ const TAG_NAMES = { injury: '부상', return: '복귀', transfer: '영입', rele
 const state = { catalog: null, sport: null, league: null, tab: 'games', data: null, ai: { enabled: false } };
 
 // 서버를 ACCESS_TOKEN 과 함께 띄운 경우: 주소의 ?token= 값을 이 탭에 기억해 두고 요청마다 보낸다
+// 폰은 QR 코드 주소(?token=...)로 한 번 열면 이 브라우저에 기억해 두고, 이후엔 주소창에 토큰 없이 열린다
 function accessToken() {
+  let t = '';
   try {
-    const t = new URLSearchParams(location.search).get('token');
-    if (t) {
-      sessionStorage.setItem('token', t);
-      history.replaceState(null, '', location.pathname);
-    }
-    return sessionStorage.getItem('token') || '';
+    t = new URLSearchParams(location.search).get('token') || '';
+    if (t) history.replaceState(null, '', location.pathname);
+  } catch {}
+  try {
+    if (t) localStorage.setItem('token', t);
+    return t || localStorage.getItem('token') || '';
   } catch {
-    return '';
+    return t;
   }
 }
+const IS_THIS_PC = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 const TOKEN = accessToken();
 
 async function api(path, opts = {}) {
@@ -152,7 +155,7 @@ function renderGames(d) {
       html += `<div class="day">${esc(dd)}</div>`;
     }
     const pick = g.prediction.pick;
-    const alert = (n) => (n ? `<span class="alert">⚠ 부상 ${n}</span>` : '');
+    const alert = (n) => (n ? `<span class="alert" title="부상 관련 ${n}건">⚠<span class="alert-label"> 부상</span> ${n}</span>` : '');
     // 홈팀을 항상 위에 (확률 막대도 홈 → 원정 순서). 굵은 글씨 + "우세" = 예측 승리팀
     const row = (side, label, extra = '') =>
       `<div class="team ${pick === side ? 'pick' : ''}">${g[side].logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g[side].logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g[side].name)}</span><span class="tag">${label}</span>${pick === side ? '<span class="tag fav">우세</span>' : ''}${extra}${alert(g.alerts[side])}</div>`;
@@ -464,8 +467,56 @@ $('#refresh').addEventListener('click', () => loadLeague(true));
 $('#detail').addEventListener('click', (e) => e.target === e.currentTarget && e.currentTarget.close());
 $('#detail').addEventListener('close', () => modalSeq++); // 닫힌 창에 도착하는 늦은 응답은 버린다
 
+/* ---------- 폰으로 보기 (이 PC에서 연 화면에만 버튼 표시) ---------- */
+async function openPhone() {
+  const seq = ++modalSeq;
+  $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
+  if (!$('#detail').open) $('#detail').showModal();
+  let info = null;
+  try {
+    info = await api('/api/phone');
+  } catch (e) {
+    if (isCurrentModal(seq)) $('#detail-body').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!isCurrentModal(seq)) return;
+  if (!info.enabled) {
+    $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰으로 보기</h2>
+      <p>지금은 <b>이 PC 전용 모드</b>로 켜져 있어서 폰에서 열 수 없습니다. 서버를 끄고 폰 모드로 다시 켜세요.</p>
+      <pre class="code">npm run phone</pre>
+      <p class="note">폰과 PC가 같은 공유기(와이파이)에 연결돼 있어야 합니다. 처음 켤 때 Windows 방화벽 창이 뜨면 "허용"을 눌러 주세요.</p>`;
+    return;
+  }
+  const list = info.addresses.length
+    ? info.addresses
+        .map(
+          (a) => `<div class="card box qr-box">${a.svg}<div class="small muted">${esc(a.name)} · ${esc(a.address)}</div></div>`,
+        )
+        .join('')
+    : '<p class="error">이 PC의 공유기 내부 주소를 찾지 못했습니다. 네트워크 연결을 확인하세요.</p>';
+  $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰으로 보기</h2>
+    <ol class="steps">
+      <li>폰을 PC와 <b>같은 공유기의 와이파이</b>에 연결하세요.</li>
+      <li>폰 카메라로 아래 QR 코드를 찍고 뜨는 주소를 여세요.</li>
+      <li>한 번 열면 폰 브라우저가 기억하므로, 열린 화면을 <b>북마크</b>하거나 <b>홈 화면에 추가</b>해 두면 다음부터 바로 열립니다.</li>
+    </ol>
+    <div class="qr-list">${list}</div>
+    <p class="note">QR 코드에는 이 PC 전용 접속 토큰이 들어 있습니다. 다른 사람에게 보여주지 마세요. 폰에서 안 열리면 ① 폰이 같은 와이파이인지(모바일 데이터 X) ② Windows 방화벽에서 Node.js 가 허용돼 있는지 확인하세요.</p>`;
+}
+
 (async function init() {
-  const c = await api('/api/catalog');
+  if (IS_THIS_PC) {
+    $('#phone-open').hidden = false;
+    $('#phone-open').addEventListener('click', openPhone);
+  }
+  let c;
+  try {
+    c = await api('/api/catalog');
+  } catch (e) {
+    $('#league-title').textContent = '접속할 수 없습니다';
+    $('#content').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
+    return;
+  }
   state.catalog = c.sports;
   state.ai = c.ai;
   $('#ai-status').className = `ai-status ${c.ai.enabled ? 'on' : ''}`;

@@ -98,9 +98,9 @@ a:hover { text-decoration: underline; }
 .team { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .team img { width: 24px; height: 24px; object-fit: contain; }
 .team .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.team .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.team .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; white-space: nowrap; flex-shrink: 0; }
 .team.pick .nm { font-weight: 700; }
-.alert { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.alert { color: var(--warn); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
 .team .tag.pre { color: var(--warn); border-color: var(--warn); }
 .team .tag.fav { color: var(--good); border-color: var(--good); font-weight: 700; }
 .fav-text { color: var(--good); }
@@ -168,4 +168,24 @@ td.num, th.num { text-align: right; }
   .game .probs { grid-column: 1 / -1; }
   .cols { grid-template-columns: 1fr; }
   .detail-inner { padding: 18px 16px; }
+}
+
+/* 폰으로 보기 */
+.phone-btn { padding: 6px 12px; font-size: 13px; white-space: nowrap; }
+.qr-list { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.qr-box { padding: 12px; text-align: center; background: #fff; }
+.qr-box svg { width: 220px; height: 220px; display: block; }
+.qr-box .muted { color: #555; }
+.steps { padding-left: 20px; line-height: 1.8; }
+.code { background: var(--surface-2); padding: 10px 14px; border-radius: 8px; font-size: 14px; }
+@media (max-width: 720px) { .phone-btn { display: none; } }
+.league-head .btn { white-space: nowrap; flex-shrink: 0; }
+@media (max-width: 720px) {
+  .team { gap: 6px; }
+  .team .nm { min-width: 0; flex: 0 1 auto; }
+  .alert-label { display: none; } /* 폰에서는 "⚠ 3" 처럼 짧게 */
+  .league-head h1 { font-size: 22px; }
+  .league-head .btn { padding: 6px 10px; font-size: 13px; }
+  .vs .nm { font-size: 16px; }
+  .big-prob { font-size: 24px; }
 }
