@@ -1,0 +1,17 @@
+{
+  "name": "sports-predictor",
+  "version": "0.1.0",
+  "description": "야구/축구/농구 뉴스·부상·일정·이적 수집 + 경기 승부 예측 대시보드",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0"
+  }
+}

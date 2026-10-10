@@ -1,0 +1,13 @@
+{
+  "_설명": "리그ID → 팀ID → RSS/Atom 주소(문자열 또는 배열). 팀ID는 대시보드의 팀 상세 화면에 표시됩니다. 예: \"epl\": { \"359\": \"https://example.com/arsenal/rss.xml\" }",
+  "kbo": {},
+  "mlb": {},
+  "kleague": {},
+  "epl": {},
+  "laliga": {},
+  "bundesliga": {},
+  "seriea": {},
+  "ligue1": {},
+  "kbl": {},
+  "nba": {}
+}

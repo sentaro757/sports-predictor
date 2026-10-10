@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>승부예측 대시보드</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">승부예측</div>
+    <nav id="sports" class="sports"></nav>
+    <div id="ai-status" class="ai-status"></div>
+  </header>
+
+  <div class="leagues-bar"><nav id="leagues" class="leagues"></nav></div>
+
+  <main class="wrap">
+    <section class="league-head">
+      <div>
+        <h1 id="league-title">불러오는 중…</h1>
+        <p id="league-meta" class="muted"></p>
+      </div>
+      <button id="refresh" class="btn ghost" type="button">새로고침</button>
+    </section>
+
+    <nav id="tabs" class="tabs">
+      <button data-tab="games" class="active">경기 예측</button>
+      <button data-tab="results">최근 결과</button>
+      <button data-tab="rankings">전력 순위</button>
+      <button data-tab="news">뉴스</button>
+      <button data-tab="injuries">부상</button>
+      <button data-tab="transactions">영입·방출</button>
+    </nav>
+
+    <section id="content" class="content"></section>
+  </main>
+
+  <dialog id="detail" class="detail">
+    <div class="detail-inner">
+      <button class="close" type="button" aria-label="닫기" onclick="this.closest('dialog').close()">✕</button>
+      <div id="detail-body"></div>
+    </div>
+  </dialog>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
