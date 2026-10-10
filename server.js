@@ -100,20 +100,35 @@ async function handle(req, res) {
   return json(res, 404, { error: 'not found' });
 }
 
-const server = http.createServer((req, res) => {
+const onRequest = (req, res) => {
   handle(req, res).catch((e) => {
     console.error('[server] 요청 처리 오류:', e);
     if (!res.headersSent) json(res, 500, { error: '서버 오류' });
     else res.destroy();
   });
-});
+};
 
 if (!LOOPBACK && !ACCESS_TOKEN) {
   console.error(`HOST=${HOST} 로 외부 접속을 열려면 ACCESS_TOKEN 도 설정해야 합니다.`);
   process.exit(1);
 }
 
-server.listen(PORT, HOST, () => {
-  console.log(`승부예측 대시보드: http://${LOOPBACK ? 'localhost' : HOST}:${PORT}${ACCESS_TOKEN ? '/?token=<ACCESS_TOKEN>' : ''}`);
-  console.log(aiEnabled() ? `AI 분석 사용 가능 (${AI_MODEL})` : 'AI 분석 꺼짐 (ANTHROPIC_API_KEY 미설정) — 통계모델만 사용');
-});
+// 이 PC 전용 모드: 브라우저가 localhost 를 IPv4(127.0.0.1) 또는 IPv6(::1) 중 어느 쪽으로 찾아도 열리도록 둘 다 연다
+const hosts = LOOPBACK ? ['127.0.0.1', '::1'] : [HOST];
+let opened = 0;
+for (const [i, host] of hosts.entries()) {
+  const server = http.createServer(onRequest);
+  server.on('error', (e) => {
+    if (i === 0) {
+      console.error(`서버를 열 수 없습니다 (${host}:${PORT}): ${e.message}`);
+      process.exit(1);
+    }
+    // IPv6 를 쓸 수 없는 PC 면 IPv4 만으로 동작
+  });
+  server.listen(PORT, host, () => {
+    if (opened++) return;
+    console.log(`승부예측 대시보드: http://${LOOPBACK ? 'localhost' : HOST}:${PORT}${ACCESS_TOKEN ? '/?token=<ACCESS_TOKEN>' : ''}`);
+    if (LOOPBACK) console.log(`  (열리지 않으면 http://127.0.0.1:${PORT})`);
+    console.log(aiEnabled() ? `AI 분석 사용 가능 (${AI_MODEL})` : 'AI 분석 꺼짐 (ANTHROPIC_API_KEY 미설정) — 통계모델만 사용');
+  });
+}
