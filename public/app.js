@@ -153,11 +153,14 @@ function renderGames(d) {
     }
     const pick = g.prediction.pick;
     const alert = (n) => (n ? `<span class="alert">⚠ 부상 ${n}</span>` : '');
+    // 홈팀을 항상 위에 (확률 막대도 홈 → 원정 순서). 굵은 글씨 + "우세" = 예측 승리팀
+    const row = (side, label, extra = '') =>
+      `<div class="team ${pick === side ? 'pick' : ''}">${g[side].logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g[side].logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g[side].name)}</span><span class="tag">${label}</span>${pick === side ? '<span class="tag fav">우세</span>' : ''}${extra}${alert(g.alerts[side])}</div>`;
     html += `<div class="card game" data-game="${esc(g.id)}">
       <div class="time">${g.status === 'live' ? '<span class="live">● LIVE</span>' : ''}${fmtTime(g.date)}</div>
       <div class="teams">
-        <div class="team ${pick === 'away' ? 'pick' : ''}">${g.away.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.away.logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g.away.name)}</span><span class="tag">원정</span>${g.preseason ? '<span class="tag pre">시범경기</span>' : ''}${alert(g.alerts.away)}</div>
-        <div class="team ${pick === 'home' ? 'pick' : ''}">${g.home.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.home.logo)}" alt="" loading="lazy">` : ''}<span class="nm">${esc(g.home.name)}</span><span class="tag">홈</span>${alert(g.alerts.home)}</div>
+        ${row('home', '홈', g.preseason ? '<span class="tag pre">시범경기</span>' : '')}
+        ${row('away', '원정')}
       </div>
       <div class="probs">${probBar(g.prediction.probs, soccer)}</div>
     </div>`;
@@ -167,10 +170,10 @@ function renderGames(d) {
 
 function renderResults(d) {
   if (!d.results.length) return '<div class="empty">최근 결과가 없습니다.</div>';
-  return `<div class="card"><table><thead><tr><th>날짜</th><th>원정</th><th class="num">스코어</th><th>홈</th></tr></thead><tbody>${d.results
+  return `<div class="card"><table><thead><tr><th>날짜</th><th>홈</th><th class="num">스코어</th><th>원정</th></tr></thead><tbody>${d.results
     .map(
-      (g) => `<tr><td class="muted">${fmtDate(g.date)}</td><td>${esc(g.away.name)}</td>
-      <td class="num"><b>${num(g.awayScore)} : ${num(g.homeScore)}</b></td><td>${esc(g.home.name)}</td></tr>`,
+      (g) => `<tr><td class="muted">${fmtDate(g.date)}</td><td>${esc(g.home.name)}</td>
+      <td class="num"><b>${num(g.homeScore)} : ${num(g.awayScore)}</b></td><td>${esc(g.away.name)}</td></tr>`,
     )
     .join('')}</tbody></table></div>`;
 }
@@ -292,9 +295,9 @@ async function openGame(gameId, aiResult = null, leagueId = state.league, seq = 
     $('#detail-body').innerHTML = `
       <p class="muted small">${esc(d.league.name)} · ${esc(fmtDay(g.date))} ${fmtTime(g.date)}</p>
       <div class="vs">
-        <div>${g.away.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.away.logo)}" alt="">` : ''}<div class="nm">${esc(g.away.name)}</div><div class="muted small">원정</div><div class="big-prob a">${pct(p.probs.away)}</div></div>
+        <div>${g.home.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.home.logo)}" alt="">` : ''}<div class="nm">${esc(g.home.name)}</div><div class="muted small">홈${p.pick === 'home' ? ' · <b class="fav-text">우세</b>' : ''}</div><div class="big-prob h">${pct(p.probs.home)}</div></div>
         <div class="muted">${soccer ? `무승부<div class="big-prob">${pct(p.probs.draw)}</div>` : 'VS'}</div>
-        <div>${g.home.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.home.logo)}" alt="">` : ''}<div class="nm">${esc(g.home.name)}</div><div class="muted small">홈</div><div class="big-prob h">${pct(p.probs.home)}</div></div>
+        <div>${g.away.logo ? `<img referrerpolicy="no-referrer" src="${safeUrl(g.away.logo)}" alt="">` : ''}<div class="nm">${esc(g.away.name)}</div><div class="muted small">원정${p.pick === 'away' ? ' · <b class="fav-text">우세</b>' : ''}</div><div class="big-prob a">${pct(p.probs.away)}</div></div>
       </div>
       ${probBar(p.probs, soccer)}
       <p class="note" style="margin-top:8px">순수 전력(Elo+홈)만 보면 홈 ${pct(p.baseProbs.home)}${soccer ? ` / 무 ${pct(p.baseProbs.draw)}` : ''} / 원정 ${pct(p.baseProbs.away)} → 폼·부상·뉴스 보정 후 위 확률</p>
@@ -303,15 +306,15 @@ async function openGame(gameId, aiResult = null, leagueId = state.league, seq = 
 
       <div class="section" id="ai-section">${aiSection(gameId)}</div>
 
-      <div class="section"><h3>예측 근거</h3><div class="cols">${sideBox('원정', d.away, p.away, 0)}${sideBox('홈', d.home, p.home, p.hfa)}</div></div>
+      <div class="section"><h3>예측 근거</h3><div class="cols">${sideBox('홈', d.home, p.home, p.hfa)}${sideBox('원정', d.away, p.away, 0)}</div></div>
 
-      <div class="section"><h3>최근 맞대결</h3>${miniList(
+      <div class="section"><h3>최근 맞대결 <span class="muted small">(홈 : 원정)</span></h3>${miniList(
         d.h2h,
-        (x) => `${fmtDate(x.date)} · ${esc(x.away.name)} <b>${num(x.awayScore)} : ${num(x.homeScore)}</b> ${esc(x.home.name)}`,
+        (x) => `${fmtDate(x.date)} · ${esc(x.home.name)} <b>${num(x.homeScore)} : ${num(x.awayScore)}</b> ${esc(x.away.name)}`,
         '최근 맞대결 기록 없음',
       )}</div>
 
-      <div class="section"><div class="cols">${teamColumn(d.away, d.injuriesStructured)}${teamColumn(d.home, d.injuriesStructured)}</div></div>`;
+      <div class="section"><div class="cols">${teamColumn(d.home, d.injuriesStructured)}${teamColumn(d.away, d.injuriesStructured)}</div></div>`;
     if (aiResult) {
       $('#ai-section').innerHTML = aiResultHtml(aiResult, g);
       $('#ai-section').insertAdjacentHTML('afterbegin', '<p class="note">AI 기사 분류 결과를 반영해 아래 예측 근거와 팀별 기사도 다시 계산했습니다.</p>');
