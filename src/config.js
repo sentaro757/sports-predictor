@@ -43,6 +43,9 @@ export const AI_DAILY_LIMIT = Number(process.env.AI_DAILY_LIMIT || 30);
 export const AI_MAX_CONCURRENT = 2;
 // AI가 통계 확률에서 바꿀 수 있는 최대 폭 (결과별, 0.15 = 15%p)
 export const AI_MAX_SHIFT = 0.15;
+// AI 기사 분류 (AI_TAG_ARTICLES=1 일 때만): 사용할 모델, 하루 최대 호출 수 (1회 = 기사 최대 30건)
+export const AI_TAG_MODEL = process.env.AI_TAG_MODEL || process.env.AI_MODEL || 'claude-opus-5-5';
+export const AI_TAG_DAILY_LIMIT = Number(process.env.AI_TAG_DAILY_LIMIT || 40);
 export const AI_MODEL = process.env.AI_MODEL || 'claude-opus-5-5';
 
 export const leagueById = (id) => LEAGUES.find((l) => l.id === id);

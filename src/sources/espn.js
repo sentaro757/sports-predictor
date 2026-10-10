@@ -211,3 +211,26 @@ export async function getTransactions(league, warn) {
     tags: classify(t.description),
   }));
 }
+
+// 선수 명단 (기사 속 선수 이름 → 소속팀 판단용). 성(last name)도 따로 넣는다 ("Saka", "Haaland")
+export async function getRoster(league, teams, warn) {
+  let failed = 0;
+  const lists = await Promise.all(
+    teams.map((t) =>
+      fetchCached(`${SITE}/${league.path}/teams/${t.id}/roster`, { ttl: 86400, warn })
+        .then((j) => {
+          const athletes = (j.athletes || []).flatMap((a) => (Array.isArray(a.items) ? a.items : [a]));
+          return athletes.flatMap((a) => [
+            { name: a.displayName || a.fullName, teamId: t.id },
+            ...(a.lastName && a.lastName.length >= 4 ? [{ name: a.lastName, teamId: t.id }] : []),
+          ]);
+        })
+        .catch(() => {
+          failed++;
+          return [];
+        }),
+    ),
+  );
+  if (failed) warn?.(`선수 명단 ${failed}/${teams.length}팀 수집 실패`);
+  return lists.flat().filter((p) => p.name);
+}

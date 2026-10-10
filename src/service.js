@@ -1,13 +1,15 @@
 import { LEAGUES, SPORTS, UPCOMING_DAYS, leagueById } from './config.js';
-import { memo } from './http.js';
+import { memo, clearMemo } from './http.js';
+import { cachedTags, scheduleTagging, taggerEnabled } from './ai-tagger.js';
 import { buildRatings, predictGame } from './model.js';
-import { attribute, teamNewsSignal } from './signals.js';
+import { attribute, buildRosterIndex, teamNewsSignal } from './signals.js';
 import * as naver from './sources/naver.js';
 import * as espn from './sources/espn.js';
 import { getTeamFeedNews } from './sources/feeds.js';
 
 const src = (league) => (league.source === 'naver' ? naver : espn);
 const byDateDesc = (a, b) => Date.parse(b.date || 0) - Date.parse(a.date || 0);
+const IMPACT_TAGS = new Set(['injury', 'return', 'coach']);
 const LIVE_GRACE_MS = 6 * 3600e3; // 시작 후 6시간까지는 진행 중 경기로 목록에 남긴다
 
 function requireLeague(id) {
@@ -53,13 +55,30 @@ export function leagueData(leagueId) {
 
     const teams = league.source === 'naver' ? naver.teamsFromGames([...history, ...upcoming]) : await espn.getTeams(league, warn);
     const teamMap = new Map(teams.map((t) => [t.id, t]));
+    // 선수 이름 → 소속팀 사전 (기사 대상 팀 판단의 가장 강한 근거)
+    const roster = buildRosterIndex(await s.getRoster(league, teams, warn).catch((e) => (warn(`선수 명단 수집 실패: ${e.message}`), [])));
 
     // 기사 ↔ 팀: 언급된 팀(teamIds)과 전력 신호의 대상 팀(impacts)을 따로 구한다
+    // AI 기사 분류 결과가 있으면 그것을 쓰고, 없으면 규칙 기반 판단을 쓴다
     const articles = [...feedNews, ...news].map((a) => {
-      const { teamIds, impacts } = attribute(a, teams, (a.teamIds || []).filter((id) => teamMap.has(id)));
-      return { ...a, teamIds: teamIds.filter((id) => teamMap.has(id)), impacts };
+      const rule = attribute(a, teams, (a.teamIds || []).filter((id) => teamMap.has(id)), roster);
+      const ai = cachedTags(league.id, a);
+      const ids = new Set([...rule.teamIds, ...(ai?.events || []).map((e) => e.teamId)]);
+      const impacts = ai ? ai.events.filter((e) => IMPACT_TAGS.has(e.tag)).map(({ teamId, tag }) => ({ teamId, tag })) : rule.impacts;
+      const tags = ai ? [...new Set([...rule.tags.filter((t) => !IMPACT_TAGS.has(t)), ...ai.events.map((e) => e.tag)])] : rule.tags;
+      return {
+        ...a,
+        tags,
+        teamIds: [...ids].filter((id) => teamMap.has(id)),
+        impacts: impacts.filter((x) => teamMap.has(x.teamId)),
+        by: ai ? 'ai' : 'rule',
+      };
     });
     articles.sort(byDateDesc);
+    const tagging = { enabled: taggerEnabled(), ai: articles.filter((a) => a.by === 'ai').length, rule: 0, queued: 0 };
+    tagging.rule = articles.length - tagging.ai;
+    // 분류 안 된 최근 기사는 백그라운드로 AI 분류 → 끝나면 이 리그 캐시를 비워 다음 요청에 반영
+    tagging.queued = scheduleTagging(league, teams, articles.filter((a) => a.by === 'rule'), () => clearMemo(`league:${leagueId}`));
 
     const model = buildRatings(history, league.sport);
     // 현재 시즌에 뛰는 팀 (강등팀은 순위표에서 제외)
@@ -70,6 +89,7 @@ export function leagueData(leagueId) {
       league,
       teams,
       teamMap,
+      roster,
       activeIds,
       history,
       upcoming,
@@ -79,6 +99,7 @@ export function leagueData(leagueId) {
       transactions,
       model,
       warnings: [...warnings],
+      tagging,
       updatedAt: new Date().toISOString(),
     };
   });
@@ -152,6 +173,7 @@ export async function leagueOverview(leagueId) {
     league: data.league,
     updatedAt: data.updatedAt,
     warnings: data.warnings,
+    tagging: data.tagging,
     backtest,
     soccerParams: data.model.soccer,
     gamesUsed: data.model.gamesUsed,

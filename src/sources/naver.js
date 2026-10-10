@@ -95,14 +95,23 @@ export async function getHistory(league, warn) {
   return games;
 }
 
+/**
+ * 경기 목록에서 팀 목록을 만든다. 올스타·이벤트 팀("팀 루키" 등)은 경기 수가 매우 적으므로
+ * 리그 팀 경기 수 중앙값의 20% (최소 5경기) 미만인 팀은 뺀다.
+ */
 export function teamsFromGames(games) {
   const map = new Map();
+  const count = new Map();
   for (const g of games) {
     for (const t of [g.home, g.away]) {
       if (!map.has(t.id)) map.set(t.id, { ...t, aliases: aliasesFor(t.name) });
+      count.set(t.id, (count.get(t.id) || 0) + 1);
     }
   }
-  return [...map.values()];
+  const counts = [...count.values()].sort((a, b) => a - b);
+  const median = counts[Math.floor(counts.length / 2)] || 0;
+  const min = Math.max(5, median * 0.2);
+  return [...map.values()].filter((t) => count.get(t.id) >= min);
 }
 
 export async function getNews(league, warn) {
@@ -135,4 +144,31 @@ export async function getInjuries() {
 }
 export async function getTransactions() {
   return null;
+}
+
+// 선수 명단 (기사 속 선수 이름 → 소속팀 판단용). KBL은 네이버에 명단 API가 없어 빈 목록
+const ROSTER_TYPES = { kbo: ['HITTER', 'PITCHER'], kleague: ['HITTER'] };
+
+export async function getRoster(league, teams, warn) {
+  const types = ROSTER_TYPES[league.category];
+  if (!types) return [];
+  const season = seasonOfKst(league, new Date().toISOString());
+  let failed = 0;
+  const lists = await Promise.all(
+    teams.flatMap((t) =>
+      types.map((type) =>
+        fetchCached(
+          `${API}/statistics/categories/${league.category}/seasons/${season}/players?playerType=${type}&teamCode=${encodeURIComponent(t.id)}&pageSize=100`,
+          { ttl: 86400, warn },
+        )
+          .then((j) => (j.result?.seasonPlayerStats || []).map((p) => ({ name: p.playerName, teamId: String(p.teamId ?? t.id) })))
+          .catch(() => {
+            failed++;
+            return [];
+          }),
+      ),
+    ),
+  );
+  if (failed) warn?.(`선수 명단 ${failed}건 수집 실패`);
+  return lists.flat().filter((p) => p.name);
 }

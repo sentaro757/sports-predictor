@@ -1,0 +1,56 @@
+{
+  "_설명": "기사 대상 팀 판단 평가 세트. expect: [[팀ID, 신호]] — 신호는 injury/return/coach. 빈 배열은 전력 신호가 없어야 함",
+  "teams": {
+    "ko": [
+      { "id": "LG", "aliases": ["LG", "트윈스"] },
+      { "id": "SS", "aliases": ["삼성", "라이온즈"] },
+      { "id": "HT", "aliases": ["KIA", "기아", "타이거즈"] },
+      { "id": "OB", "aliases": ["두산", "베어스"] },
+      { "id": "HH", "aliases": ["한화", "이글스"] }
+    ],
+    "en": [
+      { "id": "ARS", "aliases": ["Arsenal"] },
+      { "id": "CHE", "aliases": ["Chelsea"] },
+      { "id": "LIV", "aliases": ["Liverpool"] },
+      { "id": "MCI", "aliases": ["Manchester City", "Man City"] },
+      { "id": "MUN", "aliases": ["Manchester United", "Man United"] }
+    ]
+  },
+  "roster": {
+    "ko": [["오지환", "LG"], ["구자욱", "SS"], ["김도영", "HT"], ["곽빈", "OB"], ["문동주", "HH"]],
+    "en": [["Bukayo Saka", "ARS"], ["Saka", "ARS"], ["Cole Palmer", "CHE"], ["Palmer", "CHE"], ["Mohamed Salah", "LIV"], ["Salah", "LIV"], ["Erling Haaland", "MCI"], ["Haaland", "MCI"]]
+  },
+  "cases": [
+    { "lang": "ko", "text": "삼성전 앞둔 LG 주전 부상", "expect": [["LG", "injury"]] },
+    { "lang": "ko", "text": "LG, 삼성에 역전승…오지환은 햄스트링 부상으로 교체", "expect": [["LG", "injury"]] },
+    { "lang": "ko", "text": "김도영 부상 이탈, KIA 비상", "expect": [["HT", "injury"]] },
+    { "lang": "ko", "text": "두산 곽빈 팔꿈치 통증으로 말소", "expect": [["OB", "injury"]] },
+    { "lang": "ko", "text": "한화, 문동주 복귀 임박", "expect": [["HH", "return"]] },
+    { "lang": "ko", "text": "삼성 구자욱 복귀…LG는 오지환 부상 악재", "expect": [["SS", "return"], ["LG", "injury"]] },
+    { "lang": "ko", "text": "KIA를 상대로 호투한 곽빈, 부상 털고 완벽 부활", "expect": [] },
+    { "lang": "ko", "text": "LG의 에이스가 부상으로 시즌아웃", "expect": [["LG", "injury"]] },
+    { "lang": "ko", "text": "삼성 상대로 홈런 친 김도영, 경미한 부상", "expect": [["HT", "injury"]] },
+    { "lang": "ko", "text": "기아 타이거즈 감독 경질", "expect": [["HT", "coach"]] },
+    { "lang": "ko", "text": "두산과 맞대결 앞둔 한화, 주전 포수 결장", "expect": [["HH", "injury"]] },
+    { "lang": "ko", "text": "LG 트윈스 오지환, 부상에서 복귀", "expect": [["LG", "return"]] },
+    { "lang": "ko", "text": "한화 감독 \"삼성 구자욱 부상 공백 크다\"", "expect": [["SS", "injury"]] },
+    { "lang": "ko", "text": "삼성 꺾은 LG… 김도영 결장한 KIA는 3연패", "expect": [["HT", "injury"]] },
+    { "lang": "ko", "text": "부상자 속출에도 두산 승리", "expect": [["OB", "injury"]] },
+    { "lang": "ko", "text": "LG 오지환 복귀 불발", "expect": [["LG", "injury"]] },
+    { "lang": "ko", "text": "두산에 덜미 잡힌 삼성, 구자욱마저 부상", "expect": [["SS", "injury"]] },
+    { "lang": "ko", "text": "KIA 김도영 맹타에 무너진 한화, 선발 문동주 조기 강판 후 통증 호소", "expect": [["HH", "injury"]] },
+    { "lang": "en", "text": "Arsenal star Saka ruled out against Chelsea", "expect": [["ARS", "injury"]] },
+    { "lang": "en", "text": "Chelsea's Palmer suffers hamstring injury", "expect": [["CHE", "injury"]] },
+    { "lang": "en", "text": "Liverpool beat Man City as Haaland misses out injured", "expect": [["MCI", "injury"]] },
+    { "lang": "en", "text": "Salah returns for Liverpool clash with Arsenal", "expect": [["LIV", "return"]] },
+    { "lang": "en", "text": "Arsenal to face Chelsea without injured Saka", "expect": [["ARS", "injury"]] },
+    { "lang": "en", "text": "Man United manager sacked after loss to Liverpool", "expect": [["MUN", "coach"]] },
+    { "lang": "en", "text": "Haaland not available for Manchester City", "expect": [["MCI", "injury"]] },
+    { "lang": "en", "text": "Liverpool injury news ahead of Arsenal game", "expect": [["LIV", "injury"]] },
+    { "lang": "en", "text": "Arsenal beat Chelsea; Palmer injured in second half", "expect": [["CHE", "injury"]] },
+    { "lang": "en", "text": "Saka cleared to return as Arsenal host Liverpool", "expect": [["ARS", "return"]] },
+    { "lang": "en", "text": "Man City vs Arsenal: Saka doubtful with knock", "expect": [["ARS", "injury"]] },
+    { "lang": "en", "text": "Chelsea thrash injury-hit Liverpool", "expect": [["LIV", "injury"]] },
+    { "lang": "en", "text": "Liverpool loss to Arsenal leaves Salah sidelined", "expect": [["LIV", "injury"]] }
+  ]
+}

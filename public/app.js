@@ -106,7 +106,11 @@ async function loadLeague(refresh = false) {
     const warn = data.warnings?.length
       ? `<br><span class="warn-text">⚠ ${data.warnings.map(esc).join(' · ')}</span>`
       : '';
-    $('#league-meta').innerHTML = `분석 경기 ${data.gamesUsed.toLocaleString()}개${bt} · ${fmtTime(data.updatedAt)} 업데이트${warn}`;
+    const tg = data.tagging;
+    const tagInfo = tg?.enabled
+      ? ` · 기사 분석: AI ${tg.ai}건 / 규칙 ${tg.rule}건${tg.queued ? ` (AI 분류 진행 중 ${tg.queued}건 — 잠시 후 새로고침)` : ''}`
+      : '';
+    $('#league-meta').innerHTML = `분석 경기 ${data.gamesUsed.toLocaleString()}개${bt} · ${fmtTime(data.updatedAt)} 업데이트${tagInfo}${warn}`;
     renderContent();
   } catch (e) {
     $('#league-title').textContent = '오류';
@@ -171,8 +175,9 @@ function renderRankings(d) {
 
 const chips = (a) =>
   `<span class="chips">${a.official ? '<span class="chip official">구단 공식</span>' : ''}${(a.tags || [])
+    .filter((t) => TAG_NAMES[t])
     .map((t) => `<span class="chip ${t}">${TAG_NAMES[t]}</span>`)
-    .join('')}</span>`;
+    .join('')}${a.by === 'ai' ? '<span class="chip ai" title="Claude가 기사 내용을 읽고 대상 팀과 사건을 분류했습니다">AI 판단</span>' : ''}</span>`;
 
 const articleHtml = (a) => `<div class="card item">
   ${a.image ? `<img referrerpolicy="no-referrer" class="thumb" src="${safeUrl(a.image)}" alt="" loading="lazy">` : ''}

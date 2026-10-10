@@ -118,6 +118,7 @@ a:hover { text-decoration: underline; }
 .chip.injury { color: var(--bad); } .chip.return { color: var(--good); }
 .chip.transfer { color: var(--accent); } .chip.release { color: var(--warn); } .chip.coach { color: var(--warn); }
 .chip.official { background: var(--text); color: var(--bg); }
+.chip.ai { color: var(--accent); border: 1px solid var(--accent); background: none; }
 
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
