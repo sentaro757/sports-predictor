@@ -153,6 +153,13 @@ async function handle(req, res) {
 }
 
 const onRequest = (req, res) => {
+  // 폰 등 다른 기기의 접속은 기록해서, 폰에서 안 열릴 때 요청이 PC까지 오는지 확인할 수 있게 한다
+  if (!LOOPBACK && !isLocalClient(req)) {
+    res.on('finish', () => {
+      const ip = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      console.log(`[다른 기기] ${ip} ${req.method} ${String(req.url).replace(/token=[^&]+/, 'token=***')} → ${res.statusCode}`);
+    });
+  }
   handle(req, res).catch((e) => {
     console.error('[server] 요청 처리 오류:', e);
     if (!res.headersSent) json(res, 500, { error: '서버 오류' });
