@@ -190,3 +190,17 @@ td.num, th.num { text-align: right; }
   .big-prob { font-size: 24px; }
 }
 .qr-label { font-size: 13px; margin-bottom: 8px; color: #333; }
+
+/* 로그인 */
+body.locked > header, body.locked > .leagues-bar, body.locked > main { display: none; }
+.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login-card { width: min(360px, 100%); padding: 28px 24px; display: grid; gap: 12px; }
+.login-card .brand { font-size: 24px; }
+.login-card input, .pw-form input { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.pw-form { display: flex; flex-wrap: wrap; gap: 8px; }
+.pw-form input { flex: 1 1 160px; }
+.tunnel-url { margin: 8px 0 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
+.tunnel-url code { font-size: 12px; color: #222; word-break: break-all; }
+.copy-btn { padding: 4px 10px; font-size: 12px; }
+.qr-box.internet { border: 2px solid var(--accent); }
+@media (max-width: 720px) { .logout-btn:not([hidden]) { display: inline-block; } }

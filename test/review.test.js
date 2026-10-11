@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import http from 'node:http';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
@@ -63,7 +64,7 @@ test('폰 모드: 토큰 자동 생성, 다른 기기는 토큰 필수, 이 PC�
   const lan = Object.values(os.networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'));
   if (!lan) return t.skip('공유기 내부 주소가 없는 환경');
   const port = 3918;
-  const child = await startServer(port, { PHONE: '1', HOST: '', ACCESS_TOKEN: '' });
+  const child = await startServer(port, { PHONE: '1', HOST: '', ACCESS_TOKEN: '', SP_NO_TUNNEL: '1' });
   try {
     const saved = JSON.parse(fs.readFileSync(path.join(process.env.SP_STATE_DIR, 'access-token.json'), 'utf8'));
     assert.ok(saved.token.length >= 20, '토큰이 저장됨');
@@ -431,4 +432,73 @@ test('"return to form"(기량 회복)·"return home"은 부상 복귀가 아니�
   assert.ok(!analyze('How Cowser believes he can return to form in 2027').tags.includes('return'));
   assert.ok(!analyze('Allegri set to return home').tags.includes('return'));
   assert.ok(analyze('Judge set to return from injury this weekend').tags.includes('return'));
+});
+
+/* ---------- 인터넷 주소(Cloudflare 터널) + 비밀번호 로그인 ---------- */
+function req(port, { method = 'GET', path: p = '/', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const r = http.request(
+      { host: '127.0.0.1', port, method, path: p, headers: { ...headers, ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) } },
+      (res) => {
+        let s = '';
+        res.on('data', (c) => (s += c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: s ? JSON.parse(s) : null }));
+      },
+    );
+    r.on('error', reject);
+    if (data) r.write(data);
+    r.end();
+  });
+}
+
+test('터널: 인터넷 요청은 소켓이 127.0.0.1 이어도 로그인 필수, 비밀번호는 집 PC에서만, 로그인·로그아웃·잠금', async () => {
+  const port = 3919;
+  const tunnelHost = 'test-abc.trycloudflare.com';
+  const child = await startServer(port, { PHONE: '1', HOST: '', ACCESS_TOKEN: '', SP_FAKE_TUNNEL: `https://${tunnelHost}` });
+  const viaTunnel = (extra = {}) => ({ Host: tunnelHost, 'cf-connecting-ip': '203.0.113.9', ...extra });
+  try {
+    // 집 PC는 로그인 없이
+    assert.equal((await req(port, { path: '/api/catalog' })).status, 200);
+    // 인터넷(터널)으로는 로그인 필요
+    const blocked = await req(port, { path: '/api/catalog', headers: viaTunnel() });
+    assert.equal(blocked.status, 401);
+    assert.equal(blocked.body.code, 'login_required');
+    // Cloudflare 헤더가 있으면 Host 를 localhost 로 속여도 외부로 본다
+    assert.equal((await req(port, { path: '/api/catalog', headers: { Host: 'localhost', 'cf-connecting-ip': '203.0.113.9' } })).status, 401);
+    // 비밀번호 정하기 전 로그인 불가, 인터넷에서는 비밀번호를 정할 수 없음
+    assert.equal((await req(port, { method: 'POST', path: '/api/login', headers: viaTunnel(), body: { password: 'x' } })).status, 403);
+    assert.notEqual((await req(port, { method: 'POST', path: '/api/password', headers: viaTunnel(), body: { password: 'hacker123' } })).status, 200);
+    // 집 PC에서 비밀번호 설정 (짧으면 거부)
+    assert.equal((await req(port, { method: 'POST', path: '/api/password', body: { password: '123' } })).status, 400);
+    assert.equal((await req(port, { method: 'POST', path: '/api/password', body: { password: 'secret-pw-1' } })).status, 200);
+    // 틀린 비밀번호
+    assert.equal((await req(port, { method: 'POST', path: '/api/login', headers: viaTunnel(), body: { password: 'wrong' } })).status, 401);
+    // 맞는 비밀번호 → https 터널이므로 Secure, HttpOnly 쿠키
+    const ok = await req(port, { method: 'POST', path: '/api/login', headers: viaTunnel(), body: { password: 'secret-pw-1' } });
+    assert.equal(ok.status, 200);
+    const cookie = ok.headers['set-cookie'][0];
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /Secure/);
+    const session = cookie.split(';')[0];
+    assert.equal((await req(port, { path: '/api/catalog', headers: viaTunnel({ Cookie: session }) })).status, 200);
+    // 로그인해도 QR(토큰) 정보는 집 PC에서만
+    assert.equal((await req(port, { path: '/api/phone', headers: viaTunnel({ Cookie: session }) })).status, 403);
+    // 다른 사이트에서 보낸 POST 차단
+    assert.equal((await req(port, { method: 'POST', path: '/api/refresh/kbo', headers: viaTunnel({ Cookie: session, Origin: 'https://evil.example' }) })).status, 403);
+    // 로그아웃하면 그 세션은 끝
+    await req(port, { method: 'POST', path: '/api/logout', headers: viaTunnel({ Cookie: session }) });
+    assert.equal((await req(port, { path: '/api/catalog', headers: viaTunnel({ Cookie: session }) })).status, 401);
+    // 같은 IP에서 계속 틀리면 잠금
+    for (let i = 0; i < 5; i++) await req(port, { method: 'POST', path: '/api/login', headers: viaTunnel(), body: { password: 'nope' } });
+    assert.equal((await req(port, { method: 'POST', path: '/api/login', headers: viaTunnel(), body: { password: 'secret-pw-1' } })).status, 429);
+    // 집 PC 화면에는 인터넷 주소와 QR(토큰 포함)
+    const phone = await req(port, { path: '/api/phone' });
+    assert.equal(phone.body.tunnel.url, `https://${tunnelHost}`);
+    assert.ok(phone.body.tunnel.svg.startsWith('<svg') && phone.body.tunnel.qrUrl.includes('token='));
+    // 모르는 Host 는 거부
+    assert.equal((await req(port, { path: '/api/catalog', headers: { Host: 'evil.example' } })).status, 403);
+  } finally {
+    child.kill();
+  }
 });

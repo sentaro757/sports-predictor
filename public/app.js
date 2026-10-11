@@ -41,10 +41,65 @@ const IS_THIS_PC = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostnam
 const TOKEN = accessToken();
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), ...(TOKEN ? { 'x-access-token': TOKEN } : {}) } });
+  const headers = { ...(opts.headers || {}), ...(TOKEN ? { 'x-access-token': TOKEN } : {}) };
+  if (opts.body && typeof opts.body !== 'string') {
+    opts = { ...opts, body: JSON.stringify(opts.body) };
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(path, { ...opts, headers, credentials: 'same-origin' });
   const body = await res.json();
+  if (res.status === 401 && body.code === 'login_required') {
+    showLogin(); // 로그인이 풀렸으면 로그인 화면으로
+    throw new Error(body.error);
+  }
   if (!res.ok) throw new Error(body.error || res.statusText);
   return body;
+}
+
+/* ---------- 로그인 (집 밖·다른 PC) ---------- */
+let loginShown = false;
+function showLogin(message = '') {
+  if (loginShown) return;
+  loginShown = true;
+  document.body.classList.add('locked');
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    `<div class="login-screen"><form class="card login-card" id="login-form">
+      <div class="brand">승부예측</div>
+      <p class="muted small">집 PC에서 정한 비밀번호를 입력하세요. 한 번 로그인하면 30일 동안 유지됩니다.</p>
+      <input type="password" id="login-pw" autocomplete="current-password" placeholder="비밀번호" required>
+      <button class="btn" type="submit">로그인</button>
+      <p class="error small" id="login-error">${esc(message)}</p>
+    </form></div>`,
+  );
+  $('#login-pw').focus();
+  $('#login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: $('#login-pw').value }),
+        credentials: 'same-origin',
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || '로그인 실패');
+      location.reload();
+    } catch (err) {
+      $('#login-error').textContent = err.message;
+      btn.disabled = false;
+    }
+  });
+}
+
+async function logoutNow() {
+  await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+  try {
+    localStorage.removeItem('token');
+  } catch {}
+  location.href = location.pathname;
 }
 
 function saveNav() {
@@ -467,7 +522,26 @@ $('#refresh').addEventListener('click', () => loadLeague(true));
 $('#detail').addEventListener('click', (e) => e.target === e.currentTarget && e.currentTarget.close());
 $('#detail').addEventListener('close', () => modalSeq++); // 닫힌 창에 도착하는 늦은 응답은 버린다
 
-/* ---------- 폰으로 보기 (이 PC에서 연 화면에만 버튼 표시) ---------- */
+/* ---------- 폰·다른 PC로 보기 (집 PC에서 연 화면에만 버튼 표시) ---------- */
+const TUNNEL_STATUS = {
+  starting: '인터넷 주소를 여는 중입니다… 몇 초 뒤 이 창을 다시 열어 주세요.',
+  reconnecting: '인터넷 연결이 끊겨 다시 여는 중입니다… (주소가 바뀝니다)',
+  missing: 'cloudflared 가 설치돼 있지 않아 인터넷 주소를 열 수 없습니다.',
+  error: '인터넷 주소를 열지 못했습니다.',
+};
+
+function passwordBox(info) {
+  return `<div class="card box">
+    <b>${info.hasPassword ? '🔒 비밀번호 바꾸기' : '🔒 비밀번호 정하기 (다른 PC 로그인용)'}</b>
+    <p class="note">${info.hasPassword ? '바꾸면 다른 기기의 로그인이 모두 풀립니다.' : '다른 PC에서는 인터넷 주소를 열고 이 비밀번호로 로그인합니다. 폰은 QR로 비밀번호 없이 열립니다.'}</p>
+    <form id="pw-form" class="pw-form">
+      <input type="password" id="pw-new" autocomplete="new-password" placeholder="새 비밀번호 (${info.minPassword}자 이상)" minlength="${info.minPassword}" required>
+      <input type="password" id="pw-new2" autocomplete="new-password" placeholder="한 번 더" required>
+      <button class="btn" type="submit">${info.hasPassword ? '바꾸기' : '정하기'}</button>
+    </form>
+    <p class="small" id="pw-msg"></p></div>`;
+}
+
 async function openPhone() {
   const seq = ++modalSeq;
   $('#detail-body').innerHTML = '<div class="empty">불러오는 중…</div>';
@@ -481,46 +555,94 @@ async function openPhone() {
   }
   if (!isCurrentModal(seq)) return;
   if (!info.enabled) {
-    $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰으로 보기</h2>
-      <p>지금은 <b>이 PC 전용 모드</b>로 켜져 있어서 폰에서 열 수 없습니다. 서버를 끄고 폰 모드로 다시 켜세요.</p>
+    $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰·다른 PC로 보기</h2>
+      <p>지금은 <b>이 PC 전용 모드</b>로 켜져 있습니다. 서버를 끄고 아래 명령으로 다시 켜세요.</p>
       <pre class="code">npm run phone</pre>
-      <p class="note">폰과 PC가 같은 공유기(와이파이)에 연결돼 있어야 합니다. 처음 켤 때 Windows 방화벽 창이 뜨면 "허용"을 눌러 주세요.</p>`;
+      <p class="note">인터넷 주소(데이터·다른 PC용)와 같은 와이파이 주소가 함께 열립니다.</p>`;
     return;
   }
-  const hasTailscale = info.addresses.some((a) => a.kind === 'tailscale');
-  const list = info.addresses.length
-    ? info.addresses
-        .map(
-          (a) => `<div class="card box qr-box">
-            <div class="qr-label">${a.kind === 'tailscale' ? '<b>Tailscale</b> — 와이파이·데이터 어디서나' : '<b>같은 와이파이</b>에서만'}</div>
-            ${a.svg}<div class="small muted">${esc(a.name)} · ${esc(a.address)}</div></div>`,
-        )
-        .join('')
-    : '<p class="error">이 PC의 네트워크 주소를 찾지 못했습니다. 네트워크 연결을 확인하세요.</p>';
-  const tailscaleHelp = hasTailscale
-    ? ''
-    : `<div class="card box"><b>모바일 데이터로 보려면</b> (Tailscale, 무료 개인 VPN)
-        <ol class="steps small">
-          <li>이 PC에 Tailscale 설치·로그인: <a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a></li>
-          <li>폰에 Tailscale 앱 설치 → <b>같은 계정</b>으로 로그인 → 연결 켜기</li>
-          <li>이 창을 다시 열면 "Tailscale" QR 코드가 추가로 나옵니다</li>
-        </ol>
-        <p class="note">인터넷에 공개되지 않고 내 PC와 내 폰끼리만 연결됩니다. PC가 켜져 있고 이 서버가 실행 중이어야 합니다.</p></div>`;
-  $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰으로 보기</h2>
+
+  const t = info.tunnel;
+  const internet =
+    t.status === 'on' && t.url
+      ? `<div class="card box qr-box internet">
+          <div class="qr-label"><b>인터넷 주소</b> — 데이터·다른 PC 어디서나</div>
+          ${t.svg}
+          <div class="tunnel-url"><code>${esc(t.url)}</code> <button type="button" class="btn ghost copy-btn" data-copy="${esc(t.url)}">주소 복사</button></div>
+          <div class="small muted">${t.since ? `${esc(new Date(t.since).toLocaleString('ko-KR'))} 부터` : ''} · PC나 서버를 다시 켜면 주소가 바뀝니다</div>
+        </div>`
+      : t.status === 'off'
+        ? ''
+        : `<div class="card box"><b>인터넷 주소</b><p class="${t.status === 'starting' ? 'note' : 'error small'}">${esc(TUNNEL_STATUS[t.status] || t.error || '')}</p></div>`;
+
+  const lan = info.addresses
+    .map(
+      (a) => `<div class="card box qr-box">
+        <div class="qr-label">${a.kind === 'tailscale' ? '<b>Tailscale</b>' : '<b>같은 와이파이</b>에서만'}</div>
+        ${a.svg}<div class="small muted">${esc(a.address)}</div></div>`,
+    )
+    .join('');
+
+  $('#detail-body').innerHTML = `<h2 style="margin-top:0">📱 폰·다른 PC로 보기</h2>
     <ol class="steps">
-      <li>폰을 PC와 <b>같은 와이파이</b>에 연결하거나, 모바일 데이터라면 <b>Tailscale</b>을 켜세요 (아래 안내).</li>
-      <li>폰 카메라로 아래 QR 코드를 찍고 뜨는 주소를 여세요.</li>
-      <li>한 번 열면 폰 브라우저가 기억하므로, 열린 화면을 <b>북마크</b>하거나 <b>홈 화면에 추가</b>해 두면 다음부터 바로 열립니다.</li>
+      <li><b>폰</b>: 아래 QR 코드를 카메라로 찍으세요. 비밀번호 없이 바로 열립니다. (홈 화면에 추가해 두면 편해요)</li>
+      <li><b>다른 PC</b>: 인터넷 주소를 열고 비밀번호로 로그인하세요.</li>
+      <li>주소가 바뀌면(PC 재시작 등) 크롬 원격 데스크톱으로 이 창을 열어 새 주소를 확인하세요.</li>
     </ol>
-    <div class="qr-list">${list}</div>
-    ${tailscaleHelp}
-    <p class="note">QR 코드에는 이 PC 전용 접속 토큰이 들어 있습니다. 다른 사람에게 보여주지 마세요. 폰에서 안 열리면 ① 같은 와이파이 QR은 폰이 같은 와이파이일 때만, Tailscale QR은 폰의 Tailscale 연결이 켜져 있을 때만 열립니다 ② Windows 방화벽에서 Node.js 가 허용돼 있는지 확인하세요(Tailscale 네트워크가 "개인"으로 잡히면 개인 네트워크 허용도 필요할 수 있음).</p>`;
+    <div class="qr-list">${internet}${lan}</div>
+    ${passwordBox(info)}
+    <p class="note">QR 코드에는 이 PC 전용 접속 토큰이 들어 있습니다. 다른 사람에게 보여주지 마세요.</p>`;
+
+  $('#detail-body').querySelectorAll('.copy-btn').forEach((b) =>
+    b.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(b.dataset.copy);
+        b.textContent = '복사됨';
+      } catch {
+        b.textContent = '복사 실패';
+      }
+    }),
+  );
+  $('#pw-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = $('#pw-msg');
+    if ($('#pw-new').value !== $('#pw-new2').value) {
+      msg.className = 'small error';
+      msg.textContent = '두 비밀번호가 다릅니다';
+      return;
+    }
+    try {
+      await api('/api/password', { method: 'POST', body: { password: $('#pw-new').value } });
+      msg.className = 'small pos';
+      msg.textContent = '비밀번호를 저장했습니다.';
+      e.target.reset();
+    } catch (err) {
+      msg.className = 'small error';
+      msg.textContent = err.message;
+    }
+  });
 }
 
 (async function init() {
-  if (IS_THIS_PC) {
+  // 로그인 상태 확인: 집 PC는 그대로, 다른 기기는 로그인(또는 QR 토큰)이 있어야 한다
+  let auth = null;
+  try {
+    auth = await api('/api/auth');
+  } catch (e) {
+    $('#league-title').textContent = '접속할 수 없습니다';
+    $('#content').innerHTML = `<div class="empty error">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!auth.authed) {
+    showLogin(auth.hasPassword ? '' : '아직 비밀번호가 정해지지 않았습니다. 집 PC의 "폰·다른 PC로 보기"에서 먼저 정하세요.');
+    return;
+  }
+  if (auth.thisPc && IS_THIS_PC) {
     $('#phone-open').hidden = false;
     $('#phone-open').addEventListener('click', openPhone);
+  } else {
+    $('#logout').hidden = false;
+    $('#logout').addEventListener('click', logoutNow);
   }
   let c;
   try {
