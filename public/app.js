@@ -533,7 +533,7 @@ const TUNNEL_STATUS = {
 function passwordBox(info) {
   return `<div class="card box">
     <b>${info.hasPassword ? '🔒 비밀번호 바꾸기' : '🔒 비밀번호 정하기 (다른 PC 로그인용)'}</b>
-    <p class="note">${info.hasPassword ? '바꾸면 다른 기기의 로그인이 모두 풀립니다.' : '다른 PC에서는 인터넷 주소를 열고 이 비밀번호로 로그인합니다. 폰은 QR로 비밀번호 없이 열립니다.'}</p>
+    <p class="note">${info.hasPassword ? '바꾸면 다른 PC의 로그인과 폰의 QR 접속이 <b>모두 끊깁니다</b>(QR 코드도 새로 바뀜). 접속을 막고 싶은 기기가 있을 때 쓰세요.' : '다른 PC에서는 인터넷 주소를 열고 이 비밀번호로 로그인합니다. 폰은 QR로 비밀번호 없이 열립니다.'}</p>
     <form id="pw-form" class="pw-form">
       <input type="password" id="pw-new" autocomplete="new-password" placeholder="새 비밀번호 (${info.minPassword}자 이상)" minlength="${info.minPassword}" required>
       <input type="password" id="pw-new2" autocomplete="new-password" placeholder="한 번 더" required>
@@ -612,9 +612,18 @@ async function openPhone() {
       return;
     }
     try {
-      await api('/api/password', { method: 'POST', body: { password: $('#pw-new').value } });
+      const r = await api('/api/password', { method: 'POST', body: { password: $('#pw-new').value } });
+      if (r.tokenRotated) {
+        // QR 코드가 바뀌었으므로 창을 다시 그린다
+        await openPhone();
+        $('#pw-msg').className = 'small pos';
+        $('#pw-msg').textContent = '비밀번호를 바꿨습니다. 모든 기기의 접속이 끊겼으니 폰은 새 QR을 다시 찍으세요.';
+        return;
+      }
       msg.className = 'small pos';
-      msg.textContent = '비밀번호를 저장했습니다.';
+      msg.textContent = r.tokenFixedByEnv
+        ? '비밀번호를 바꿨습니다. 단, QR 토큰은 ACCESS_TOKEN 환경변수로 고정돼 있어 바뀌지 않았습니다(환경변수를 바꾸고 다시 켜야 폰 QR 접속이 끊김).'
+        : '비밀번호를 저장했습니다.';
       e.target.reset();
     } catch (err) {
       msg.className = 'small error';

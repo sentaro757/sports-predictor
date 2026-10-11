@@ -154,16 +154,24 @@ function teamRegexes(team) {
  * list: [{ name, teamId }]  (영어 이름은 성(last name)도 따로 넣으면 "Saka" 처럼 짧게 불러도 찾는다)
  */
 export function buildRosterIndex(list) {
+  // 부르는 이름(전체 이름 또는 성) → 가리킬 수 있는 선수들 { 팀|전체 이름 }
+  // 성만 있는 항목은 full(전체 이름)을 함께 받는다: { name: 'Saka', teamId, full: 'Bukayo Saka' }
   const byName = new Map();
-  for (const { name, teamId } of list || []) {
+  for (const { name, teamId, full } of list || []) {
     const n = String(name || '').trim();
     if (n.length < 2 || (isAscii(n) && n.length < 4)) continue;
     const k = n.toLowerCase();
-    if (!byName.has(k)) byName.set(k, new Set());
-    byName.get(k).add(String(teamId));
+    const person = `${teamId}|${String(full || n).toLowerCase()}`;
+    if (!byName.has(k)) byName.set(k, new Map());
+    byName.get(k).set(person, { teamId: String(teamId), full: String(full || n).toLowerCase() });
   }
   const entries = [];
-  for (const [k, teams] of byName) if (teams.size === 1) entries.push({ name: k, teamId: [...teams][0], re: nameRegex(k) });
+  // 정확히 한 선수만 가리키는 이름만 쓴다 (같은 팀에 성이 같은 선수가 둘이면 성만으로는 쓰지 않음)
+  for (const [k, people] of byName) {
+    if (people.size !== 1) continue;
+    const [p] = people.values();
+    entries.push({ name: k, teamId: p.teamId, full: p.full, re: nameRegex(k) });
+  }
   // 긴 이름 먼저 (성만 있는 항목보다 전체 이름 우선)
   entries.sort((a, b) => b.name.length - a.name.length);
   return { entries };
@@ -178,7 +186,7 @@ function findPlayers(t, roster) {
     for (const m of t.matchAll(e.re)) {
       // 이미 더 긴 이름으로 잡힌 위치 안이면 건너뛴다
       if (out.some((p) => m.index >= p.index && m.index < p.index + p.len)) continue;
-      out.push({ teamId: e.teamId, index: m.index, len: m[0].length, kind: 'player', name: e.name });
+      out.push({ teamId: e.teamId, index: m.index, len: m[0].length, kind: 'player', name: e.full });
     }
   }
   return out;
@@ -236,6 +244,9 @@ function findNameWithTeam(t, teams) {
   return out;
 }
 
+/** 같은 선수인지: 둘 다 이름이 있으면 이름으로, 한쪽이라도 모르면 같은 사건으로 본다(보수적) */
+const samePlayer = (a, b) => !a || !b || playerKey(a) === playerKey(b);
+
 /** 한 신호(hit)의 대상 팀(과 근거가 된 선수) 고르기. 근거가 애매하면 null */
 function pickTarget(hit, entities) {
   const scored = new Map(); // teamId -> best score
@@ -272,6 +283,7 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
   const impacts = [];
   const orphanTitleTags = []; // 제목에 신호는 있는데 제목 안에 팀·선수가 전혀 없는 경우
   let summaryOwnTeams = new Set();
+  const titlePlayers = new Set(); // 제목에 이름이 나온 선수 (요약이 이 선수들에 대해 반대로 말해도 제목을 따른다)
 
   // 제목과 요약을 각각 따로 본다 (요약 속 사진 설명이 제목 판단을 흐리지 않도록)
   for (const [part, isTitle] of [[title, true], [summary, false]]) {
@@ -279,6 +291,7 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
     const t = part.toLowerCase();
     const mentions = findMentions(part, candidates);
     const players = [...findPlayers(t, roster), ...findNameWithTeam(t, candidates)];
+    if (isTitle) for (const p of players) titlePlayers.add(playerKey(p.name));
     for (const m of [...mentions, ...players]) teamIds.add(m.teamId);
     const spans = clauses(t);
     const { hits } = analyze(part);
@@ -302,15 +315,27 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
       const target = pickTarget(h, pool);
       const teamId = target?.teamId;
       // 제목이 이미 이 팀에 대해 판단했으면 요약은 덧붙이지 않는다 (제목이 기사의 핵심 주장)
-      if (!isTitle && impacts.some((x) => x.teamId === teamId && x.fromTitle)) continue;
-      if (teamId && !impacts.some((x) => x.teamId === teamId && x.tag === h.tag)) impacts.push({ teamId, tag: h.tag, player: target.player, fromTitle: isTitle });
+      if (!teamId) continue;
+      const player = target.player;
+      // 제목이 이미 같은 팀의 같은 선수(또는 선수 불명) 이야기를 했으면 요약은 덧붙이지 않는다 — 다른 선수면 따로 센다
+      if (!isTitle && impacts.some((x) => x.fromTitle && x.teamId === teamId && samePlayer(x.player, player))) continue;
+      // 제목이 이 팀에 대해 판단했고, 요약의 선수가 제목에도 이름이 나온 선수라면 제목(핵심 주장)을 따른다
+      // 예) 제목 "음바페·코나테·발베르데 출전 가능" + 요약 "부상 중이던 음바페…" → 복귀만
+      if (!isTitle && player && titlePlayers.has(playerKey(player)) && impacts.some((x) => x.fromTitle && x.teamId === teamId)) continue;
+      if (!impacts.some((x) => x.teamId === teamId && x.tag === h.tag && samePlayer(x.player, player))) {
+        impacts.push({ teamId, tag: h.tag, player, fromTitle: isTitle });
+      } else if (player) {
+        // 같은 사건인데 앞에서 선수를 몰랐다면 선수 이름을 채운다
+        const x = impacts.find((y) => y.teamId === teamId && y.tag === h.tag && !y.player);
+        if (x) x.player = player;
+      }
     }
   }
   // "김경문 감독의 마지막 인사…함께 떠난다"처럼 제목에 팀이 없으면, 요약에 (상대팀이 아닌) 팀이 하나뿐일 때 그 팀으로 본다
   if (orphanTitleTags.length && summaryOwnTeams.size === 1) {
     const [teamId] = summaryOwnTeams;
     for (const tag of new Set(orphanTitleTags)) {
-      if (!impacts.some((x) => x.teamId === teamId && x.tag === tag)) impacts.push({ teamId, tag, fromTitle: true });
+      if (!impacts.some((x) => x.teamId === teamId && x.tag === tag)) impacts.push({ teamId, tag, player: null, fromTitle: true });
     }
   }
   const { tags } = analyze(`${title}\n${summary}`);
@@ -318,10 +343,17 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
 }
 
 /** 선수 이름 정규화: 영어는 성(마지막 단어)으로 ("Bukayo Saka" = "Saka"), 한국어는 공백 제거 */
-function playerKey(name) {
-  const s = String(name || '').toLowerCase().trim();
-  if (!s) return '';
-  return /^[a-z]/.test(s) ? s.split(/\s+/).at(-1) : s.replace(/\s+/g, '');
+/**
+ * 선수 식별 키: 전체 이름 기준 (성만으로 줄이지 않는다 — 같은 팀의 Jalen Williams 와 Jaylin Williams 는 다른 선수).
+ * 대소문자·문장부호·Jr./III 같은 접미사·띄어쓰기 차이만 없앤다.
+ */
+export function playerKey(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[.,'’`-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w && !/^(jr|sr|ii|iii|iv|v)$/.test(w))
+    .join('');
 }
 
 const kstDay = (iso) => new Date(Date.parse(iso) + 9 * 3600e3).toISOString().slice(0, 10);

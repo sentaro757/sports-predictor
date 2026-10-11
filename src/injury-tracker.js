@@ -5,26 +5,34 @@
 // 결장 시작 시점 = min(이 프로그램이 처음 본 시각, ESPN 부상 정보의 업데이트 시각)
 //  - ESPN date 는 발병일이 아니라 마지막 업데이트 시각이지만, 그때 이미 부상이었으므로 "적어도 그때부터"의 근거가 된다
 //  - 처음 실행하면 기록이 없으므로 보수적으로(=덜 할인) 계산된다
+//
+// 부상 "에피소드": 정상적으로 받은 명단에서 선수가 빠지면 그 에피소드는 끝난 것으로 보고 기록을 지운다.
+// 나중에 다시 명단에 오르면 새 부상으로 처음부터 센다 (회복 후 정상 출전한 경기를 결장으로 세지 않도록).
+// 명단 수집에 실패한 경우에는 이 함수가 호출되지 않으므로(injuries = null) 기록은 그대로 남는다.
 import { readJson, withFileLock, writeJsonSync } from './store.js';
 
-const FORGET_MS = 30 * 86400e3; // 명단에서 30일 동안 안 보이면 기록 삭제 (회복)
+const keyOf = (i) => `${i.teamId}|${String(i.player || '').toLowerCase()}`;
 
+/**
+ * injuries: 이번에 "정상적으로 받은" 부상 명단 전체 (빈 배열 = 부상자 없음).
+ */
 export function annotateInjuries(leagueId, injuries, history, now = Date.now()) {
-  if (!injuries?.length) return injuries;
+  if (!Array.isArray(injuries)) return injuries;
   const file = `injuries-${leagueId}.json`;
   let seen = {};
   try {
     seen = withFileLock(`injuries-${leagueId}`, () => {
-      const s = readJson(file, {});
+      const prev = readJson(file, {});
+      const next = {};
+      // 이번 명단에 없는 선수는 에피소드 종료(기록 삭제). 있는 선수만 이어서 기록
       for (const i of injuries) {
-        const key = `${i.teamId}|${String(i.player || '').toLowerCase()}`;
+        const key = keyOf(i);
         const updated = Date.parse(i.date);
-        const first = Math.min(s[key]?.firstSeen ?? now, Number.isFinite(updated) ? updated : now, now);
-        s[key] = { firstSeen: first, lastSeen: now };
+        const first = Math.min(prev[key]?.firstSeen ?? now, Number.isFinite(updated) ? updated : now, now);
+        next[key] = { firstSeen: first, lastSeen: now };
       }
-      for (const [k, v] of Object.entries(s)) if (now - v.lastSeen > FORGET_MS) delete s[k];
-      writeJsonSync(file, s);
-      return s;
+      writeJsonSync(file, next);
+      return next;
     });
   } catch (e) {
     console.warn(`[injury] 기록 실패: ${e.message}`);
@@ -41,7 +49,7 @@ export function annotateInjuries(leagueId, injuries, history, now = Date.now()) 
     }
   }
   return injuries.map((i) => {
-    const rec = seen[`${i.teamId}|${String(i.player || '').toLowerCase()}`];
+    const rec = seen[keyOf(i)];
     const since = rec?.firstSeen ?? now;
     const gamesMissed = (gamesByTeam.get(i.teamId) || []).filter((t) => t > since && t <= now).length;
     return { ...i, outSince: new Date(since).toISOString(), gamesMissed };

@@ -184,8 +184,10 @@ export async function getInjuries(league, warn) {
     warn(`부상 명단 수집 실패: ${e.message}`);
     return null;
   });
-  // 유럽 축구처럼 데이터가 비어 있으면 null → 뉴스 기사에서 추출하는 방식으로 대체
-  if (!j?.injuries?.length) return null;
+  if (!Array.isArray(j?.injuries)) return null; // 수집 실패 → 부상 추적 기록을 건드리지 않음
+  // 유럽 축구는 ESPN 부상 명단이 항상 비어 있으므로 null → 뉴스 기사에서 추출하는 방식으로 대체.
+  // MLB·NBA 는 빈 명단이 "부상자 없음"이라는 정상 정보이므로 빈 배열로 돌려준다 (부상 에피소드 종료에 사용)
+  if (!j.injuries.length) return league.sport === 'soccer' ? null : [];
   return j.injuries.flatMap((t) =>
     (t.injuries || []).map((i) => ({
       teamId: String(t.id),
@@ -222,7 +224,7 @@ export async function getRoster(league, teams, warn) {
           const athletes = (j.athletes || []).flatMap((a) => (Array.isArray(a.items) ? a.items : [a]));
           return athletes.flatMap((a) => [
             { name: a.displayName || a.fullName, teamId: t.id },
-            ...(a.lastName && a.lastName.length >= 4 ? [{ name: a.lastName, teamId: t.id }] : []),
+            ...(a.lastName && a.lastName.length >= 4 ? [{ name: a.lastName, teamId: t.id, full: a.displayName || a.fullName }] : []),
           ]);
         })
         .catch(() => {

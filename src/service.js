@@ -60,6 +60,10 @@ export function leagueData(leagueId) {
     const roster = buildRosterIndex(await s.getRoster(league, teams, warn).catch((e) => (warn(`선수 명단 수집 실패: ${e.message}`), [])));
 
     // 기사 ↔ 팀: 언급된 팀(teamIds)과 전력 신호의 대상 팀(impacts)을 따로 구한다
+    // AI가 "Saka"처럼 성만 줘도, 명단에서 한 선수로 확정되면 규칙 판단과 같은 전체 이름으로 맞춘다
+    const rosterByName = new Map(roster.entries.map((e) => [e.name, e.full]));
+    const canonicalPlayer = (p) => (p ? rosterByName.get(String(p).toLowerCase().trim()) || String(p) : null);
+
     // AI 기사 분류 결과가 있으면 그것을 쓰고, 없으면 규칙 기반 판단을 쓴다
     const articles = [...feedNews, ...news].map((a) => {
       const rule = attribute(a, teams, (a.teamIds || []).filter((id) => teamMap.has(id)), roster);
@@ -67,7 +71,7 @@ export function leagueData(leagueId) {
       const ids = new Set([...rule.teamIds, ...(ai?.events || []).map((e) => e.teamId)]);
       // 선수 정보도 넘긴다 (같은 선수의 같은 사건을 여러 기사가 다뤄도 1건으로 세기 위해)
       const impacts = ai
-        ? ai.events.filter((e) => IMPACT_TAGS.has(e.tag)).map(({ teamId, tag, player }) => ({ teamId, tag, player: player || null }))
+        ? ai.events.filter((e) => IMPACT_TAGS.has(e.tag)).map(({ teamId, tag, player }) => ({ teamId, tag, player: canonicalPlayer(player) }))
         : rule.impacts;
       const tags = ai ? [...new Set([...rule.tags.filter((t) => !IMPACT_TAGS.has(t)), ...ai.events.map((e) => e.tag)])] : rule.tags;
       return {

@@ -61,7 +61,11 @@ test('C1: 잘못된 URL 요청에도 서버가 죽지 않는다 / S10: 외부 �
 });
 
 test('폰 모드: 토큰 자동 생성, 다른 기기는 토큰 필수, 이 PC는 토큰 없이, QR은 이 PC에서만', async (t) => {
-  const lan = Object.values(os.networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'));
+  let ifaces = {};
+  try {
+    ifaces = os.networkInterfaces(); // 일부 샌드박스 환경에서는 오류 → 건너뜀
+  } catch {}
+  const lan = Object.values(ifaces).flat().find((a) => a && a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.'));
   if (!lan) return t.skip('공유기 내부 주소가 없는 환경');
   const port = 3918;
   const child = await startServer(port, { PHONE: '1', HOST: '', ACCESS_TOKEN: '', SP_NO_TUNNEL: '1' });
@@ -501,4 +505,92 @@ test('터널: 인터넷 요청은 소켓이 127.0.0.1 이어도 로그인 필수
   } finally {
     child.kill();
   }
+});
+
+/* ---------- 3차 리뷰 (R9~R12) 재현 사례 ---------- */
+
+test('R9: 비밀번호를 바꾸면 예전 세션과 예전 QR 토큰 모두 거부된다', async () => {
+  const port = 3920;
+  const tunnelHost = 'test-r9.trycloudflare.com';
+  const child = await startServer(port, { PHONE: '1', HOST: '', ACCESS_TOKEN: '', SP_FAKE_TUNNEL: `https://${tunnelHost}` });
+  const via = (extra = {}) => ({ Host: tunnelHost, 'cf-connecting-ip': '198.51.100.7', ...extra });
+  try {
+    await req(port, { method: 'POST', path: '/api/password', body: { password: 'first-pass-1' } });
+    const login = await req(port, { method: 'POST', path: '/api/login', headers: via(), body: { password: 'first-pass-1' } });
+    const session = login.headers['set-cookie'][0].split(';')[0];
+    const oldToken = new URL((await req(port, { path: '/api/phone' })).body.tunnel.qrUrl).searchParams.get('token');
+    assert.equal((await req(port, { path: '/api/catalog', headers: via({ Cookie: session }) })).status, 200);
+    assert.equal((await req(port, { path: '/api/catalog', headers: via({ 'x-access-token': oldToken }) })).status, 200);
+
+    const changed = await req(port, { method: 'POST', path: '/api/password', body: { password: 'second-pass-2' } });
+    assert.equal(changed.body.tokenRotated, true);
+    assert.equal((await req(port, { path: '/api/catalog', headers: via({ Cookie: session }) })).status, 401, '예전 세션 거부');
+    assert.equal((await req(port, { path: '/api/catalog', headers: via({ 'x-access-token': oldToken }) })).status, 401, '예전 QR 토큰 거부');
+    const newToken = new URL((await req(port, { path: '/api/phone' })).body.tunnel.qrUrl).searchParams.get('token');
+    assert.notEqual(newToken, oldToken);
+    assert.equal((await req(port, { path: '/api/catalog', headers: via({ 'x-access-token': newToken }) })).status, 200, '새 QR은 동작');
+  } finally {
+    child.kill();
+  }
+});
+
+test('R10: 회복(명단에서 빠짐) 뒤 재부상은 새 에피소드 — 정상 출전 경기를 결장으로 세지 않는다', async () => {
+  const { annotateInjuries } = await import('../src/injury-tracker.js');
+  const { injuryAdj } = await import('../src/model.js');
+  const day = 86400e3;
+  const now = Date.now();
+  const history = Array.from({ length: 10 }, (_, i) => ({
+    status: 'final', date: new Date(now - (25 - i * 2) * day).toISOString(), home: { id: 'T' }, away: { id: 'X' },
+  }));
+  const p = (date) => ({ teamId: 'T', player: 'Star Player', status: 'Out', date: new Date(date).toISOString() });
+  annotateInjuries('test-r10', [p(now - 40 * day)], history, now - 40 * day); // 40일 전 부상
+  annotateInjuries('test-r10', [], history, now - 30 * day); // 30일 전: 정상 수집된 빈 명단 = 회복
+  const [again] = annotateInjuries('test-r10', [p(now)], history, now); // 오늘 재부상
+  assert.equal(again.gamesMissed, 0);
+  assert.equal(injuryAdj([again], 'basketball'), -18);
+  // 수집 실패(null)는 기록을 건드리지 않는다
+  assert.equal(annotateInjuries('test-r10', null, history, now), null);
+});
+
+test('R11: 같은 팀의 성이 같은 다른 선수는 다른 사건 (Jalen/Jaylin Williams)', async () => {
+  const { playerKey } = await import('../src/signals.js');
+  const now = Date.now();
+  const sig = teamNewsSignal(
+    [
+      { date: new Date(now - 1000).toISOString(), impacts: [{ teamId: 'OKC', tag: 'injury', player: 'Jalen Williams' }] },
+      { date: new Date(now).toISOString(), impacts: [{ teamId: 'OKC', tag: 'return', player: 'Jaylin Williams' }] },
+    ],
+    'OKC',
+  );
+  assert.deepEqual({ neg: sig.neg, pos: sig.pos, net: sig.net }, { neg: 1, pos: 1, net: 0 });
+  assert.equal(playerKey('Ronald Acuña Jr.'), playerKey('ronald acuña'));
+  assert.notEqual(playerKey('Jalen Williams'), playerKey('Jaylin Williams'));
+  // 성만 나온 기사는 그 성이 한 선수만 가리킬 때만 전체 이름으로 연결
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const ambiguous = buildRosterIndex([
+    { name: 'Jalen Williams', teamId: 'OKC' }, { name: 'Williams', teamId: 'OKC', full: 'Jalen Williams' },
+    { name: 'Jaylin Williams', teamId: 'OKC' }, { name: 'Williams', teamId: 'OKC', full: 'Jaylin Williams' },
+  ]);
+  assert.ok(!ambiguous.entries.some((e) => e.name === 'williams'), '모호한 성은 쓰지 않음');
+  const unique = buildRosterIndex([{ name: 'Bukayo Saka', teamId: 'ARS' }, { name: 'Saka', teamId: 'ARS', full: 'Bukayo Saka' }]);
+  const r = attribute({ title: 'Saka ruled out', summary: '' }, [{ id: 'ARS', aliases: ['Arsenal'] }], [], unique);
+  assert.equal(r.impacts[0].player, 'bukayo saka', '성만 나와도 전체 이름으로');
+});
+
+test('R12: 한 기사 안의 같은 팀 다른 선수 부상 두 건은 둘 다 남는다', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const teams = [{ id: 'LG', aliases: ['LG', '트윈스'] }];
+  const roster = buildRosterIndex([{ name: '김현수', teamId: 'LG' }, { name: '오지환', teamId: 'LG' }]);
+  const one = attribute({ title: 'LG 김현수 부상. LG 오지환 부상.', summary: '' }, teams, [], roster);
+  assert.deepEqual(one.impacts.map((x) => x.player).sort(), ['김현수', '오지환']);
+  // 같은 내용을 기사 두 개로 나눠도 결과가 같다
+  const now = new Date().toISOString();
+  const split = ['LG 김현수 부상', 'LG 오지환 부상'].map((title) => ({ title, date: now, ...attribute({ title, summary: '' }, teams, [], roster) }));
+  assert.equal(teamNewsSignal([{ ...one, title: 'x', date: now }], 'LG').neg, teamNewsSignal(split, 'LG').neg);
+  // 제목의 선수와 요약의 다른 선수도 따로
+  const ts = attribute({ title: 'LG 김현수 부상', summary: '오지환도 부상으로 빠졌다.' }, teams, [], roster);
+  assert.equal(ts.impacts.length, 2);
+  // 같은 선수를 제목·요약에서 반복하면 1건
+  const same = attribute({ title: 'LG 김현수 부상', summary: '김현수는 햄스트링 부상이다.' }, teams, [], roster);
+  assert.equal(same.impacts.length, 1);
 });

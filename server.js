@@ -25,25 +25,42 @@ const SESSION_COOKIE = 'sp_session';
  * QR 코드용 접속 토큰. ACCESS_TOKEN 환경변수가 없으면 처음 한 번 만들어 data/state/access-token.json 에 저장
  * (서버를 다시 켜도 같은 토큰이라 폰에 저장한 주소가 계속 동작)
  */
-function loadAccessToken() {
-  if (ACCESS_TOKEN_ENV) return ACCESS_TOKEN_ENV;
-  if (LOOPBACK && !TUNNEL) return '';
-  const saved = readJson('access-token.json', null);
-  if (saved?.token) return saved.token;
+function newAccessToken() {
   const token = crypto.randomBytes(18).toString('base64url');
   writeJsonSync('access-token.json', { token, createdAt: new Date().toISOString() });
   return token;
 }
-const ACCESS_TOKEN = loadAccessToken();
+function loadAccessToken() {
+  if (ACCESS_TOKEN_ENV) return ACCESS_TOKEN_ENV;
+  if (LOOPBACK && !TUNNEL) return '';
+  return readJson('access-token.json', null)?.token || newAccessToken();
+}
+let ACCESS_TOKEN = loadAccessToken();
+
+/**
+ * 모든 기기의 접속 권한 회수: 비밀번호를 바꿀 때 QR 토큰도 새로 만든다 (예전 QR·폰 북마크는 더 이상 안 열림).
+ * ACCESS_TOKEN 환경변수로 고정한 경우는 바꿀 수 없으므로 false
+ */
+function rotateAccessToken() {
+  if (ACCESS_TOKEN_ENV || !ACCESS_TOKEN) return false;
+  ACCESS_TOKEN = newAccessToken();
+  return true;
+}
 
 // Tailscale(개인 VPN) 주소는 100.64.0.0/10
 const isTailscale = (name, address) => /tailscale/i.test(name) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address);
 
-/** 이 PC의 공유기 내부 주소 (가상 네트워크 어댑터 제외) */
+/** 이 PC의 공유기 내부 주소 (가상 네트워크 어댑터 제외). 네트워크 정보를 못 읽는 환경이면 빈 목록 */
 function lanAddresses() {
   if (LOOPBACK) return [];
+  let ifaces = {};
+  try {
+    ifaces = os.networkInterfaces();
+  } catch {
+    return [];
+  }
   const out = [];
-  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+  for (const [name, list] of Object.entries(ifaces)) {
     if (/vEthernet|WSL|VirtualBox|VMware|Hyper-V|Docker|Loopback/i.test(name)) continue;
     for (const a of list || []) {
       if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')) {
@@ -149,8 +166,11 @@ const routes = [
     re: /^\/api\/password$/,
     fn: async (_, req) => {
       thisPcOnly(req); // 비밀번호는 집 PC에서만 정하거나 바꿀 수 있다
-      setPassword((await readBody(req)).password);
-      return { ok: true };
+      const changing = hasPassword();
+      setPassword((await readBody(req)).password); // 모든 로그인 세션 종료
+      // 바꾸는 경우엔 QR 토큰도 새로 만들어 예전 QR·폰 북마크 접속까지 끊는다 (처음 정할 때는 폰 QR 유지)
+      const tokenRotated = changing ? rotateAccessToken() : false;
+      return { ok: true, tokenRotated, tokenFixedByEnv: changing && !!ACCESS_TOKEN_ENV };
     },
   },
   {
