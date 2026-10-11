@@ -552,6 +552,22 @@ test('R10: 회복(명단에서 빠짐) 뒤 재부상은 새 에피소드 — 정
   assert.equal(annotateInjuries('test-r10', null, history, now), null);
 });
 
+test('부상 명단 일시 누락: 빠진 사이 팀 경기가 없었으면 같은 부상으로 이어서 센다', async () => {
+  const { annotateInjuries } = await import('../src/injury-tracker.js');
+  const day = 86400e3;
+  const now = Date.now();
+  // 팀 경기: 20일 전부터 2일 간격, 마지막은 2일 전
+  const history = Array.from({ length: 10 }, (_, i) => ({
+    status: 'final', date: new Date(now - (20 - i * 2) * day).toISOString(), home: { id: 'T' }, away: { id: 'X' },
+  }));
+  const p = () => ({ teamId: 'T', player: 'Star Player', status: 'Out', date: new Date(now).toISOString() });
+  annotateInjuries('test-blip', [p()], history, now - 15 * day); // 15일 전 부상
+  annotateInjuries('test-blip', [], history, now - 1.5 * day); // 하루 반 전: 명단에서 잠깐 빠짐
+  const [back] = annotateInjuries('test-blip', [p()], history, now); // 그 사이 팀 경기 없음 → 같은 부상
+  assert.equal(back.gamesMissed, 7);
+  assert.equal(Date.parse(back.outSince), now - 15 * day);
+});
+
 test('R11: 같은 팀의 성이 같은 다른 선수는 다른 사건 (Jalen/Jaylin Williams)', async () => {
   const { playerKey } = await import('../src/signals.js');
   const now = Date.now();
