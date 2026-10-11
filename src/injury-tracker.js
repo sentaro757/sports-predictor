@@ -45,7 +45,9 @@ export function annotateInjuries(leagueId, injuries, history, now = Date.now()) 
         const key = keyOf(i);
         const updated = Date.parse(i.date);
         // 빠졌던 사이 팀 경기가 있었으면 회복 후 재부상이므로 예전 기록은 쓰지 않는다
-        const old = prev[key]?.goneAt != null && playedBetween(i.teamId, prev[key].goneAt, now) ? undefined : prev[key];
+        // 빠진 지 30일이 지났어도 새 부상이다 (중간 조회 여부와 상관없이 같은 결과가 나오도록)
+        const gone = prev[key]?.goneAt;
+        const old = gone != null && (playedBetween(i.teamId, gone, now) || now - gone > STALE_MS) ? undefined : prev[key];
         const first = Math.min(old?.firstSeen ?? now, Number.isFinite(updated) ? updated : now, now);
         next[key] = { firstSeen: first, lastSeen: now };
       }

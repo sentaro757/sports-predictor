@@ -269,6 +269,22 @@ function pickTarget(hit, entities) {
   return { teamId: ranked[0][0], player: playerOf.get(ranked[0][0]) || null };
 }
 
+// 이름 사이가 나열 기호·접속어뿐이면 공동 주어 ("김현수·오지환", "김현수와 오지환", "Saka and Rice")
+const JOINT_GAP = /^\s*(?:[·ㆍ,、&/]|와|과|및|and)\s*$/;
+
+/** target 선수가 공동 주어로 묶여 있으면 묶인 선수 전체, 아니면 target 만 */
+function jointPlayers(target, players, t) {
+  const sorted = players.filter((p) => p.kind === 'player').sort((a, b) => a.index - b.index);
+  const i = sorted.findIndex((p) => p.teamId === target.teamId && p.name === target.player);
+  if (i < 0) return [target];
+  const joined = (a, b) => JOINT_GAP.test(t.slice(a.index + a.len, b.index));
+  let lo = i;
+  let hi = i;
+  while (lo > 0 && joined(sorted[lo - 1], sorted[lo])) lo--;
+  while (hi < sorted.length - 1 && joined(sorted[hi], sorted[hi + 1])) hi++;
+  return sorted.slice(lo, hi + 1).map((p) => ({ teamId: p.teamId, player: p.name }));
+}
+
 /**
  * 기사가 언급하는 팀(teamIds)과, 전력 신호가 실제로 해당하는 팀(impacts)을 구분한다.
  *  - taggedIds: API가 붙여준 팀 태그(ESPN). 있으면 그 팀들만 후보로 본다.
@@ -283,7 +299,6 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
   const impacts = [];
   const orphanTitleTags = []; // 제목에 신호는 있는데 제목 안에 팀·선수가 전혀 없는 경우
   let summaryOwnTeams = new Set();
-  const titlePlayers = new Set(); // 제목에 이름이 나온 선수 (요약이 이 선수들에 대해 반대로 말해도 제목을 따른다)
 
   // 제목과 요약을 각각 따로 본다 (요약 속 사진 설명이 제목 판단을 흐리지 않도록)
   for (const [part, isTitle] of [[title, true], [summary, false]]) {
@@ -291,7 +306,6 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
     const t = part.toLowerCase();
     const mentions = findMentions(part, candidates);
     const players = [...findPlayers(t, roster), ...findNameWithTeam(t, candidates)];
-    if (isTitle) for (const p of players) titlePlayers.add(playerKey(p.name));
     for (const m of [...mentions, ...players]) teamIds.add(m.teamId);
     const spans = clauses(t);
     const { hits } = analyze(part);
@@ -313,21 +327,20 @@ export function attribute(article, teams, taggedIds = [], roster = null) {
       for (let back = 1; !usable(pool) && back <= (isTitle ? 3 : 1); back++) pool = all.filter(inSpan(ci - back));
       if (isTitle && !usable(pool)) pool = all.filter(inSpan(ci + 1));
       const target = pickTarget(h, pool);
-      const teamId = target?.teamId;
-      // 제목이 이미 이 팀에 대해 판단했으면 요약은 덧붙이지 않는다 (제목이 기사의 핵심 주장)
-      if (!teamId) continue;
-      const player = target.player;
-      // 제목이 이미 같은 팀의 같은 선수(또는 선수 불명) 이야기를 했으면 요약은 덧붙이지 않는다 — 다른 선수면 따로 센다
-      if (!isTitle && impacts.some((x) => x.fromTitle && x.teamId === teamId && samePlayer(x.player, player))) continue;
-      // 제목이 이 팀에 대해 판단했고, 요약의 선수가 제목에도 이름이 나온 선수라면 제목(핵심 주장)을 따른다
-      // 예) 제목 "음바페·코나테·발베르데 출전 가능" + 요약 "부상 중이던 음바페…" → 복귀만
-      if (!isTitle && player && titlePlayers.has(playerKey(player)) && impacts.some((x) => x.fromTitle && x.teamId === teamId)) continue;
-      if (!impacts.some((x) => x.teamId === teamId && x.tag === h.tag && samePlayer(x.player, player))) {
-        impacts.push({ teamId, tag: h.tag, player, fromTitle: isTitle });
-      } else if (player) {
-        // 같은 사건인데 앞에서 선수를 몰랐다면 선수 이름을 채운다
-        const x = impacts.find((y) => y.teamId === teamId && y.tag === h.tag && !y.player);
-        if (x) x.player = player;
+      if (!target?.teamId) continue;
+      // "김현수·오지환 동반 부상"처럼 공동 주어면 같은 사건을 각 선수에게 연결한다
+      // 예) 제목 "음바페·코나테·발베르데 출전 가능" → 세 선수 모두 복귀
+      for (const { teamId, player } of target.player ? jointPlayers(target, players, t) : [target]) {
+        // 제목이 이미 같은 팀의 같은 선수(또는 선수 불명) 이야기를 했으면 요약은 덧붙이지 않는다 — 다른 선수면 따로 센다
+        // (제목에 이름만 나오고 사건이 연결되지 않은 선수는 요약을 따른다)
+        if (!isTitle && impacts.some((x) => x.fromTitle && x.teamId === teamId && samePlayer(x.player, player))) continue;
+        if (!impacts.some((x) => x.teamId === teamId && x.tag === h.tag && samePlayer(x.player, player))) {
+          impacts.push({ teamId, tag: h.tag, player, fromTitle: isTitle });
+        } else if (player) {
+          // 같은 사건인데 앞에서 선수를 몰랐다면 선수 이름을 채운다
+          const x = impacts.find((y) => y.teamId === teamId && y.tag === h.tag && !y.player);
+          if (x) x.player = player;
+        }
       }
     }
   }

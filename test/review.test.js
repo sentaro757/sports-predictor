@@ -610,3 +610,55 @@ test('R12: 한 기사 안의 같은 팀 다른 선수 부상 두 건은 둘 다 
   const same = attribute({ title: 'LG 김현수 부상', summary: '김현수는 햄스트링 부상이다.' }, teams, [], roster);
   assert.equal(same.impacts.length, 1);
 });
+
+test('R13: 30일 넘게 빠졌다 재등장한 부상은 중간 조회 여부와 상관없이 새 부상', async () => {
+  const { annotateInjuries } = await import('../src/injury-tracker.js');
+  const { injuryAdj } = await import('../src/model.js');
+  const day = 86400e3;
+  const d0 = Date.now() - 80 * day;
+  const at = (d) => d0 + d * day;
+  // D1~D10 팀 경기, 이후 비시즌
+  const history = Array.from({ length: 10 }, (_, i) => ({ status: 'final', date: new Date(at(i + 1)).toISOString(), home: { id: 'T' }, away: { id: 'X' } }));
+  const p = (d) => ({ teamId: 'T', player: 'Star Player', status: 'Out', date: new Date(at(d)).toISOString() });
+  const run = (league, withMiddle) => {
+    annotateInjuries(league, [p(0)], history, at(0));
+    annotateInjuries(league, [], history, at(20));
+    if (withMiddle) annotateInjuries(league, [], history, at(60));
+    return annotateInjuries(league, [p(80)], history, at(80))[0];
+  };
+  const a = run('test-r13a', false);
+  const b = run('test-r13b', true);
+  assert.equal(a.gamesMissed, 0);
+  assert.equal(b.gamesMissed, 0);
+  assert.equal(injuryAdj([a], 'basketball'), -18);
+});
+
+test('R14: 제목에 이름만 나온 선수의 요약 속 부상은 버리지 않는다', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const teams = [{ id: 'LG', aliases: ['LG', '트윈스'] }];
+  const roster = buildRosterIndex([{ name: '김현수', teamId: 'LG' }, { name: '오지환', teamId: 'LG' }]);
+  const now = new Date().toISOString();
+  const sig = (title) => {
+    const r = attribute({ title, summary: '오지환은 무릎 부상으로 결장한다.' }, teams, [], roster);
+    const s = teamNewsSignal([{ title, date: now, ...r }], 'LG');
+    return { neg: s.neg, pos: s.pos, net: s.net };
+  };
+  assert.deepEqual(sig('LG 김현수 복귀, 오지환 근황은?'), { neg: 1, pos: 1, net: 0 });
+  assert.deepEqual(sig('LG 김현수 복귀'), { neg: 1, pos: 1, net: 0 });
+});
+
+test('R15: 공동 주어("A·B 동반 부상")는 두 선수 모두 센다, 제목의 공동 복귀는 요약보다 우선', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const teams = [{ id: 'LG', aliases: ['LG', '트윈스'] }];
+  const roster = buildRosterIndex([{ name: '김현수', teamId: 'LG' }, { name: '오지환', teamId: 'LG' }, { name: '박해민', teamId: 'LG' }]);
+  const now = new Date().toISOString();
+  const neg = (title, summary = '') => teamNewsSignal([{ title, date: now, ...attribute({ title, summary }, teams, [], roster) }], 'LG').neg;
+  assert.equal(neg('LG 김현수·오지환 동반 부상'), 2);
+  assert.equal(neg('LG 김현수와 오지환 모두 부상'), 2);
+  assert.equal(neg('LG 김현수 부상. LG 오지환 부상.'), neg('LG 김현수·오지환 동반 부상'));
+  // 이름이 여럿 나와도 나열이 아니면 공동 주어가 아니다
+  assert.equal(neg('LG 김현수 부상에 오지환 대체 출전'), 1);
+  // 제목 "A·B·C 출전 가능" + 요약 "부상 중이던 A…" → 복귀만 (제목이 핵심 주장)
+  const r = attribute({ title: 'LG 김현수·오지환·박해민 출전 가능', summary: '부상 중이던 김현수가 돌아온다.' }, teams, [], roster);
+  assert.deepEqual(r.impacts.map((x) => `${x.player}:${x.tag}`).sort(), ['김현수:return', '박해민:return', '오지환:return']);
+});
