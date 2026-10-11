@@ -662,3 +662,15 @@ test('R15: 공동 주어("A·B 동반 부상")는 두 선수 모두 센다, 제�
   const r = attribute({ title: 'LG 김현수·오지환·박해민 출전 가능', summary: '부상 중이던 김현수가 돌아온다.' }, teams, [], roster);
   assert.deepEqual(r.impacts.map((x) => `${x.player}:${x.tag}`).sort(), ['김현수:return', '박해민:return', '오지환:return']);
 });
+
+test('R15 보완: 나열 속 애칭+성("Charlie Rivera")도 공동 주어 — 요약의 "Injured stars …"가 부상으로 섞이지 않는다', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const ps = [['Alan Smith', 'RM'], ['Ben Jones', 'RM'], ['Carlos Rivera', 'RM']];
+  const roster = buildRosterIndex(ps.flatMap(([n, t]) => [{ name: n, teamId: t }, { name: n.split(' ')[1], teamId: t, full: n }]));
+  const teams = [{ id: 'RM', aliases: ['Real Madrid', 'Madrid'] }, { id: 'BAR', aliases: ['Barcelona'] }];
+  const r = attribute({
+    title: 'Alan Smith, Ben Jones, Charlie Rivera expected to be available for El Clasico - source',
+    summary: 'Injured stars Alan Smith, Ben Jones and Carlos Rivera are all expected to be available when Real Madrid face Barcelona.',
+  }, teams, ['RM', 'BAR'], roster);
+  assert.deepEqual(r.impacts.map((x) => `${x.player}:${x.tag}`).sort(), ['alan smith:return', 'ben jones:return', 'carlos rivera:return']);
+});

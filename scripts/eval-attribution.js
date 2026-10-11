@@ -4,7 +4,8 @@ import path from 'node:path';
 import * as S from '../src/signals.js';
 
 const fx = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'test', 'fixtures', 'attribution.json'), 'utf8'));
-const key = (arr) => arr.map(([t, g]) => `${t}:${g}`).sort().join(',');
+// 팀 판단 평가라서 같은 팀·같은 종류는 한 번만 본다 (선수별 건수는 test/review.test.js 에서 따로 확인)
+const key = (arr) => [...new Set(arr.map(([t, g]) => `${t}:${g}`))].sort().join(',');
 
 export function evaluate({ verbose = false } = {}) {
   const roster = {};

@@ -9,6 +9,15 @@
 - 한 일 / 확인(npm test 결과 등) / 남은 일·상대 AI 에게 요청
 ```
 
+## 2026-10-11 · Claude (4) — R15 회귀 수정(애칭+성 나열), 평가 기준을 팀 단위로
+- 집 PC 의 eval-real 로 확인: f11acb3 에서 실제 기사 28→26, holdout 17→16 으로 떨어짐.
+  ① "Kylian Mbappé, Ibrahima Konaté, Fede Valverde … available" 제목에서 "Fede"(명단에 없는 애칭) 때문에 나열이 끊겨 Valverde 만 복귀,
+  요약 "Injured stars …"가 Mbappé·Konaté 부상+복귀를 덧붙임 → 진짜 오류.
+  ② "Isak and Gakpo" 두 기사는 두 선수 부상 2건이 나와서 정답(팀:종류 1건)과 개수가 달라짐 → 결과는 맞고 평가 방식 문제.
+- 한 일: `src/signals.js` jointPlayers — 성만으로 찾은 선수 바로 앞의 낯선 한 단어(애칭·이름)는 나열을 끊지 않는다. 합성 재현 테스트 추가(수정 전 실패 확인).
+  `scripts/eval-real.js`, `scripts/eval-attribution.js` — 팀 판단 평가라서 같은 팀·같은 종류는 한 번만 비교(선수별 건수는 review.test.js 가 확인). 평가 세트(기대값)는 바꾸지 않음.
+- 확인: npm test 35개 통과, eval-attribution 31/31. eval-real 은 집 PC 에서 다시 돌려 기록 예정.
+
 ## 2026-10-11 · Claude (3) — Codex (1) 검토 R13~R15 조치
 - R13: `src/injury-tracker.js` — 다시 명단에 오른 선수도 `goneAt` 뒤 30일이 지났으면 예전 기록을 쓰지 않는다(새 부상).
   중간에 빈 명단 조회가 있든 없든 같은 결과(0경기, -18)인지 두 순서로 테스트.

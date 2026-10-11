@@ -271,13 +271,20 @@ function pickTarget(hit, entities) {
 
 // 이름 사이가 나열 기호·접속어뿐이면 공동 주어 ("김현수·오지환", "김현수와 오지환", "Saka and Rice")
 const JOINT_GAP = /^\s*(?:[·ㆍ,、&/]|와|과|및|and)\s*$/;
+const JOINT_GAP_GIVEN = /^\s*(?:[,&/]|and)\s*[a-zà-ÿ][a-zà-ÿ.'’-]*\s+$/;
 
 /** target 선수가 공동 주어로 묶여 있으면 묶인 선수 전체, 아니면 target 만 */
 function jointPlayers(target, players, t) {
   const sorted = players.filter((p) => p.kind === 'player').sort((a, b) => a.index - b.index);
   const i = sorted.findIndex((p) => p.teamId === target.teamId && p.name === target.player);
   if (i < 0) return [target];
-  const joined = (a, b) => JOINT_GAP.test(t.slice(a.index + a.len, b.index));
+  const joined = (a, b) => {
+    const gap = t.slice(a.index + a.len, b.index);
+    if (JOINT_GAP.test(gap)) return true;
+    // 성만으로 찾은 선수 앞의 낯선 이름·애칭 한 단어는 같은 사람의 이름이다 ("Mbappé, Fede Valverde")
+    const bySurname = t.slice(b.index, b.index + b.len) !== b.name;
+    return bySurname && JOINT_GAP_GIVEN.test(gap);
+  };
   let lo = i;
   let hi = i;
   while (lo > 0 && joined(sorted[lo - 1], sorted[lo])) lo--;
