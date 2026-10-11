@@ -695,3 +695,25 @@ test('R17: 이름 근거가 없는 단어("and injured Rice")로는 나열을 �
   assert.deepEqual(players('Saka and injured Rice watched from the stands'), ['declan rice']);
   assert.deepEqual(players('Saka and Dec Rice injured'), ['bukayo saka', 'declan rice']);
 });
+
+test('예측 기록: 시작 전 경기만 처음·마지막 예측을 남기고, 시작한 경기는 바꾸지 않는다', async () => {
+  const { logPredictions, readPredictionLog } = await import('../src/prediction-log.js');
+  const { predictGame } = await import('../src/model.js');
+  const day = 86400e3;
+  const now = Date.now();
+  const model = buildRatings([], 'basketball');
+  const game = { id: 'g1', date: new Date(now + day).toISOString(), home: { id: 'A' }, away: { id: 'B' } };
+  const pred = (net) => predictGame(game, 'basketball', { model, injuries: { home: [], away: [] }, signals: { home: { net }, away: { net: 0 } } });
+  logPredictions('test-plog', [{ game, prediction: pred(0) }], now);
+  logPredictions('test-plog', [{ game, prediction: pred(2) }], now + 3600e3); // 뉴스가 바뀌어 예측 변경
+  let rec = readPredictionLog('test-plog').g1;
+  assert.equal(rec.first.pick, 'home'); // 홈 어드밴티지만큼 홈 우세
+  assert.ok(rec.last.probs.home > rec.first.probs.home);
+  assert.equal(rec.last.adj.home.news, 12);
+  // 경기 시작 뒤에는 바꾸지 않는다
+  logPredictions('test-plog', [{ game, prediction: pred(-2) }], now + 2 * day);
+  assert.deepEqual(readPredictionLog('test-plog').g1.last, rec.last);
+  // 4개월 지난 기록은 지운다
+  logPredictions('test-plog', [], now + 130 * day);
+  assert.equal(readPredictionLog('test-plog').g1, undefined);
+});

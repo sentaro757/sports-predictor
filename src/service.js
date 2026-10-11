@@ -7,6 +7,7 @@ import * as naver from './sources/naver.js';
 import * as espn from './sources/espn.js';
 import { getTeamFeedNews } from './sources/feeds.js';
 import { annotateInjuries } from './injury-tracker.js';
+import { logPredictions } from './prediction-log.js';
 
 const src = (league) => (league.source === 'naver' ? naver : espn);
 const byDateDesc = (a, b) => Date.parse(b.date || 0) - Date.parse(a.date || 0);
@@ -143,11 +144,13 @@ const alertCount = (data, c) => (data.injuries ? c.injuries.length : c.injuryNew
 
 export async function leagueOverview(leagueId) {
   const data = await leagueData(leagueId);
+  const logged = [];
   const games = data.upcoming
     .filter((g) => g.status === 'scheduled' || g.status === 'live')
     .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
     .map((g) => {
       const { prediction, ctx } = predict(data, g);
+      logged.push({ game: g, prediction });
       return {
         ...g,
         home: slimTeam(data, g.home),
@@ -156,6 +159,13 @@ export async function leagueOverview(leagueId) {
         alerts: { home: alertCount(data, ctx.home), away: alertCount(data, ctx.away) },
       };
     });
+
+  // 경기 전 예측 기록 (나중에 결과와 비교용). 실패해도 화면은 그대로 보여준다
+  try {
+    logPredictions(leagueId, logged);
+  } catch (e) {
+    console.warn(`[predictions] 기록 실패: ${e.message}`);
+  }
 
   const results = data.history
     .filter((g) => g.status === 'final')

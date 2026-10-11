@@ -1,11 +1,13 @@
 // 최근 경기 복기: 끝난 경기를 "그 경기 전날까지의 결과만으로" 다시 예측해 실제 결과와 비교한다 (네트워크 필요)
 //   node scripts/review-recent.js            최근 3일
 //   node scripts/review-recent.js 7 epl nba  최근 7일, 리그 지정
-// 부상·뉴스 보정은 과거 시점 기록이 없어 빼고 Elo+홈+최근 폼만 쓴다 (화면 예측과 조금 다를 수 있다)
+// 다시 계산한 예측은 부상·뉴스 보정이 없다(Elo+홈+최근 폼). 화면에 냈던 예측이 기록돼 있으면(src/prediction-log.js)
+// "기록" 줄에 그 예측(시작 직전 마지막 값)도 함께 보여주고 따로 집계한다
 import { LEAGUES, MODEL } from '../src/config.js';
 import { buildRatings, predictGame } from '../src/model.js';
 import * as naver from '../src/sources/naver.js';
 import * as espn from '../src/sources/espn.js';
+import { readPredictionLog } from '../src/prediction-log.js';
 
 const days = Number(process.argv[2]) || 3;
 const only = process.argv.slice(3);
@@ -17,6 +19,7 @@ const outcome = (g) => (g.homeScore > g.awayScore ? 'home' : g.homeScore < g.awa
 const NO_SIGNAL = { net: 0 };
 
 const total = { n: 0, hit: 0, loss: 0, homeHit: 0 };
+const shown = { n: 0, hit: 0, loss: 0 }; // 화면에 냈던 예측(기록 있는 경기만)
 const buckets = new Map(); // 확신도 구간 → { n, hit }
 
 for (const league of LEAGUES.filter((l) => !only.length || only.includes(l.id))) {
@@ -37,6 +40,7 @@ for (const league of LEAGUES.filter((l) => !only.length || only.includes(l.id)))
     continue;
   }
   const isSoccer = MODEL[league.sport].draws;
+  const plog = readPredictionLog(league.id);
   // 같은 날 경기는 그날 0시(KST) 전까지의 결과로 만든 레이팅을 같이 쓴다
   const byDay = new Map();
   const rows = [];
@@ -64,11 +68,19 @@ for (const league of LEAGUES.filter((l) => !only.length || only.includes(l.id)))
     bk.n++;
     if (ok) bk.hit++;
     buckets.set(b, bk);
-    const pickName = p.pick === 'home' ? g.home.name : p.pick === 'away' ? g.away.name : '무승부';
+    const nameOf = (k) => (k === 'home' ? g.home.name : k === 'away' ? g.away.name : '무승부');
+    const pickName = nameOf(p.pick);
+    const rec = plog[g.id]?.last;
+    if (rec) {
+      shown.n++;
+      if (rec.pick === res) shown.hit++;
+      shown.loss += -Math.log(Math.max(rec.probs[res], 1e-6));
+    }
     rows.push(
       `  ${ok ? '○' : '✖'} ${day} ${g.away.name} ${g.awayScore} @ ${g.home.name} ${g.homeScore}` +
         ` | 예측 ${pickName} ${pct(p.confidence)}${isSoccer ? ` (홈 ${pct(p.probs.home)} 무 ${pct(p.probs.draw)} 원정 ${pct(p.probs.away)})` : ''}` +
-        `${g.preseason ? ' [시범]' : ''}${g.neutral ? ' [중립]' : ''}${p.newSeason ? ' [새 시즌 첫 경기]' : ''}`,
+        `${g.preseason ? ' [시범]' : ''}${g.neutral ? ' [중립]' : ''}${p.newSeason ? ' [새 시즌 첫 경기]' : ''}` +
+        (rec ? `\n      기록 ${rec.pick === res ? '○' : '✖'} 화면 예측 ${nameOf(rec.pick)} ${pct(rec.probs[rec.pick])} (부상 ${rec.adj.home.injury}/${rec.adj.away.injury}, 뉴스 ${rec.adj.home.news}/${rec.adj.away.news})` : ''),
     );
   }
   console.log(`\n${league.name}: ${hit}/${n} 적중 (${n ? pct(hit / n) : '-'})`);
@@ -77,4 +89,6 @@ for (const league of LEAGUES.filter((l) => !only.length || only.includes(l.id)))
 
 console.log(`\n=== 전체: ${total.hit}/${total.n} 적중 (${total.n ? pct(total.hit / total.n) : '-'}), 평균 logloss ${(total.loss / (total.n || 1)).toFixed(3)}`);
 console.log(`    참고: 무조건 홈팀 선택 시 ${total.homeHit}/${total.n}`);
+if (shown.n) console.log(`    화면에 냈던 예측(기록된 ${shown.n}경기): ${shown.hit}/${shown.n} 적중 (${pct(shown.hit / shown.n)}), logloss ${(shown.loss / shown.n).toFixed(3)}`);
+else console.log('    화면에 냈던 예측 기록 없음 (기록은 대시보드에서 리그를 연 뒤부터 쌓인다)');
 for (const [b, v] of [...buckets].sort()) console.log(`    확신도 ${b}: ${v.hit}/${v.n} (${pct(v.hit / v.n)})`);
