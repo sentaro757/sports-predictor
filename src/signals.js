@@ -250,7 +250,7 @@ const samePlayer = (a, b) => !a || !b || playerKey(a) === playerKey(b);
 /** 한 신호(hit)의 대상 팀(과 근거가 된 선수) 고르기. 근거가 애매하면 null */
 function pickTarget(hit, entities) {
   const scored = new Map(); // teamId -> best score
-  const playerOf = new Map(); // teamId -> 가장 높은 점수를 준 선수 이름
+  const playerOf = new Map(); // teamId -> 가장 높은 점수를 준 선수 (등장 위치까지 보존)
   for (const e of entities) {
     if (e.kind === 'team' && e.opponent) continue;
     const d = e.index < hit.index ? hit.index - (e.index + e.len) : e.index - (hit.index + hit.len);
@@ -260,30 +260,34 @@ function pickTarget(hit, entities) {
     s += 2 * Math.exp(-Math.max(d, 0) / 20);
     if (s > (scored.get(e.teamId) ?? -Infinity)) {
       scored.set(e.teamId, s);
-      playerOf.set(e.teamId, e.kind === 'player' ? e.name : null);
+      playerOf.set(e.teamId, e.kind === 'player' ? e : null);
     }
   }
   const ranked = [...scored.entries()].sort((a, b) => b[1] - a[1]);
   if (!ranked.length) return null;
   if (ranked.length > 1 && ranked[0][1] - ranked[1][1] < 0.75) return null; // 비슷하면 판단 보류
-  return { teamId: ranked[0][0], player: playerOf.get(ranked[0][0]) || null };
+  const entity = playerOf.get(ranked[0][0]) || null;
+  return { teamId: ranked[0][0], player: entity?.name || null, entity };
 }
 
 // 이름 사이가 나열 기호·접속어뿐이면 공동 주어 ("김현수·오지환", "김현수와 오지환", "Saka and Rice")
 const JOINT_GAP = /^\s*(?:[·ㆍ,、&/]|와|과|및|and)\s*$/;
-const JOINT_GAP_GIVEN = /^\s*(?:[,&/]|and)\s*[a-zà-ÿ][a-zà-ÿ.'’-]*\s+$/;
+const JOINT_GAP_GIVEN = /^\s*(?:[,&/]|and)\s*([a-zà-ÿ][a-zà-ÿ.'’-]*)\s+$/;
 
-/** target 선수가 공동 주어로 묶여 있으면 묶인 선수 전체, 아니면 target 만 */
+/** target 선수가 공동 주어로 묶여 있으면 묶인 선수 전체, 아니면 target 만.
+ *  이름으로 다시 찾지 않고 pickTarget 이 고른 바로 그 등장 위치(entity)를 기준으로 묶는다 (다른 문장의 같은 이름과 섞이지 않도록) */
 function jointPlayers(target, players, t) {
   const sorted = players.filter((p) => p.kind === 'player').sort((a, b) => a.index - b.index);
-  const i = sorted.findIndex((p) => p.teamId === target.teamId && p.name === target.player);
+  const i = sorted.indexOf(target.entity);
   if (i < 0) return [target];
   const joined = (a, b) => {
     const gap = t.slice(a.index + a.len, b.index);
     if (JOINT_GAP.test(gap)) return true;
-    // 성만으로 찾은 선수 앞의 낯선 이름·애칭 한 단어는 같은 사람의 이름이다 ("Mbappé, Fede Valverde")
-    const bySurname = t.slice(b.index, b.index + b.len) !== b.name;
-    return bySurname && JOINT_GAP_GIVEN.test(gap);
+    // 성만으로 찾은 선수 앞의 한 단어가 그 선수 이름의 줄임(애칭)이면 같은 사람의 이름이다 ("Mbappé, Fede Valverde" — Federico)
+    // 이름 근거가 없는 단어("Saka and injured Rice")는 나열로 보지 않는다
+    if (t.slice(b.index, b.index + b.len) === b.name) return false;
+    const w = gap.match(JOINT_GAP_GIVEN)?.[1];
+    return !!w && w.length >= 3 && b.name.split(/\s+/).slice(0, -1).some((given) => given.startsWith(w));
   };
   let lo = i;
   let hi = i;

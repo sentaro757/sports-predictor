@@ -663,14 +663,35 @@ test('R15: 공동 주어("A·B 동반 부상")는 두 선수 모두 센다, 제�
   assert.deepEqual(r.impacts.map((x) => `${x.player}:${x.tag}`).sort(), ['김현수:return', '박해민:return', '오지환:return']);
 });
 
-test('R15 보완: 나열 속 애칭+성("Charlie Rivera")도 공동 주어 — 요약의 "Injured stars …"가 부상으로 섞이지 않는다', async () => {
+test('R15 보완: 나열 속 애칭+성("Carl Rivera" = Carlos)도 공동 주어 — 요약의 "Injured stars …"가 부상으로 섞이지 않는다', async () => {
   const { buildRosterIndex } = await import('../src/signals.js');
   const ps = [['Alan Smith', 'RM'], ['Ben Jones', 'RM'], ['Carlos Rivera', 'RM']];
   const roster = buildRosterIndex(ps.flatMap(([n, t]) => [{ name: n, teamId: t }, { name: n.split(' ')[1], teamId: t, full: n }]));
   const teams = [{ id: 'RM', aliases: ['Real Madrid', 'Madrid'] }, { id: 'BAR', aliases: ['Barcelona'] }];
   const r = attribute({
-    title: 'Alan Smith, Ben Jones, Charlie Rivera expected to be available for El Clasico - source',
+    title: 'Alan Smith, Ben Jones, Carl Rivera expected to be available for El Clasico - source',
     summary: 'Injured stars Alan Smith, Ben Jones and Carlos Rivera are all expected to be available when Real Madrid face Barcelona.',
   }, teams, ['RM', 'BAR'], roster);
   assert.deepEqual(r.impacts.map((x) => `${x.player}:${x.tag}`).sort(), ['alan smith:return', 'ben jones:return', 'carlos rivera:return']);
+});
+
+test('R16: 같은 선수가 두 문장에 나오면 사건이 있는 문장의 나열만 본다', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const teams = [{ id: 'LG', aliases: ['LG', '트윈스'] }];
+  const roster = buildRosterIndex([{ name: '김현수', teamId: 'LG' }, { name: '오지환', teamId: 'LG' }]);
+  const r = attribute({ title: 'LG 김현수·오지환 인터뷰. 김현수 부상으로 결장', summary: '' }, teams, [], roster);
+  assert.deepEqual(r.impacts.filter((x) => x.tag === 'injury').map((x) => x.player), ['김현수']);
+  assert.equal(teamNewsSignal([{ title: 'x', date: new Date().toISOString(), ...r }], 'LG').neg, 1);
+});
+
+test('R17: 이름 근거가 없는 단어("and injured Rice")로는 나열을 넓히지 않는다, 애칭은 이름 앞부분일 때만', async () => {
+  const { buildRosterIndex } = await import('../src/signals.js');
+  const teams = [{ id: 'ARS', aliases: ['Arsenal'] }];
+  const roster = buildRosterIndex([
+    { name: 'Bukayo Saka', teamId: 'ARS' }, { name: 'Saka', teamId: 'ARS', full: 'Bukayo Saka' },
+    { name: 'Declan Rice', teamId: 'ARS' }, { name: 'Rice', teamId: 'ARS', full: 'Declan Rice' },
+  ]);
+  const players = (title) => attribute({ title, summary: '' }, teams, ['ARS'], roster).impacts.filter((x) => x.tag === 'injury').map((x) => x.player).sort();
+  assert.deepEqual(players('Saka and injured Rice watched from the stands'), ['declan rice']);
+  assert.deepEqual(players('Saka and Dec Rice injured'), ['bukayo saka', 'declan rice']);
 });
