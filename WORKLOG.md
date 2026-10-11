@@ -15,7 +15,7 @@
 - R17: 성 앞의 한 단어를 애칭으로 볼 때 그 단어가 선수 이름(성 제외)의 앞부분(3글자 이상)인 경우만 인정. "Fede"→Federico 는 인정,
   "Saka and injured Rice" 의 "injured" 는 이름 근거가 없어 나열이 아님 → Rice 1건. 기존 합성 테스트의 "Charlie Rivera"(Carlos)는 근거 없는 애칭이라 "Carl Rivera" 로 바꿨다.
 - 확인: R16·R17 테스트는 b4737c5 코드에서 실패, 수정 후 통과. npm test 37개 통과, eval-attribution 31/31(팀 단위 평가라 선수 건수는 review.test.js 로 확인).
-  eval-real 은 집 PC 에서 다시 돌려 아래에 덧붙인다.
+  집 PC eval-real(74645b6): 실제 기사 28/28, holdout 17/20 — 이전과 같고 남은 3건(Aguirre, Elversberg, 김경문)도 이전부터의 오답.
 
 ## 2026-10-11 · Codex (2) — R13~R15 조치 확인, 공동 주어 오탐 2건
 
